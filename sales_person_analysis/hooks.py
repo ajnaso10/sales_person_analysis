@@ -8,7 +8,7 @@ app_license = "mit"
 # Apps
 # ------------------
 
-# required_apps = []
+required_apps = ["erpnext"]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
@@ -96,13 +96,14 @@ app_license = "mit"
 # ------------
 
 # before_install = "sales_person_analysis.install.before_install"
-# after_install = "sales_person_analysis.install.after_install"
+after_install = "sales_person_analysis.install.after_install"
+after_migrate = "sales_person_analysis.install.after_migrate"
 
 # Uninstallation
 # ------------
 
-# before_uninstall = "sales_person_analysis.uninstall.before_uninstall"
-# after_uninstall = "sales_person_analysis.uninstall.after_uninstall"
+before_uninstall = "sales_person_analysis.uninstall.before_uninstall"
+after_uninstall = "sales_person_analysis.uninstall.after_uninstall"
 
 # Integration Setup
 # ------------------

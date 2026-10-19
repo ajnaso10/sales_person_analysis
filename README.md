@@ -1,33 +1,18 @@
-### Sales Person Analysis
+# Sales Person Analysis
 
-Sales Person Wise Analysis desk page
+Desk page **Sales Person Wise Analysis** for interactive Sales Invoice / Sales Order customer-wise sales analysis.
 
-### Installation
-
-You can install this app using the [bench](https://github.com/frappe/bench) CLI:
+## Setup
 
 ```bash
-cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch version-16
-bench install-app sales_person_analysis
+bench --site dev.local install-app sales_person_analysis
+bench --site dev.local migrate
+bench --site dev.local clear-cache
+bench build --app sales_person_analysis
 ```
 
-### Contributing
+Open from the Awesome Bar: `Sales Person Wise Analysis`, or via Selling / Sales workspace.
 
-This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
+## License
 
-```bash
-cd apps/sales_person_analysis
-pre-commit install
-```
-
-Pre-commit is configured to use the following tools for checking and formatting your code:
-
-- ruff
-- eslint
-- prettier
-- pyupgrade
-
-### License
-
-mit
+MIT

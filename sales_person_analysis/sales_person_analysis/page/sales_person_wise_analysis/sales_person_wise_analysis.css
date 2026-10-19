@@ -1,0 +1,234 @@
+/* Sales Person Wise Analysis desk page */
+
+.spa-page {
+	padding-bottom: 1.5rem;
+}
+
+.spa-page .spa-filter-panel {
+	background: var(--fg-color);
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius-md, 8px);
+	padding: 1rem 1.25rem;
+	margin-bottom: 1.25rem;
+}
+
+.spa-page .spa-filter-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.65rem 0;
+	border-bottom: 1px solid var(--border-color);
+}
+
+.spa-page .spa-filter-row:last-child {
+	border-bottom: none;
+	padding-bottom: 0;
+}
+
+.spa-page .spa-filter-row:first-child {
+	padding-top: 0;
+}
+
+.spa-page .spa-chip {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 30px;
+	padding: 0.25rem 0.75rem;
+	border: 1px solid var(--border-color);
+	border-radius: 999px;
+	background: var(--control-bg, #fff);
+	color: var(--text-color);
+	font-size: var(--text-sm);
+	line-height: 1.2;
+	cursor: pointer;
+	user-select: none;
+	white-space: nowrap;
+}
+
+.spa-page .spa-chip:hover {
+	border-color: var(--primary);
+}
+
+.spa-page .spa-chip.is-selected {
+	background: var(--primary);
+	border-color: var(--primary);
+	color: var(--fg-color, #fff);
+}
+
+.spa-page .spa-chip.is-selected-soft {
+	background: var(--primary-light, #e8f0fe);
+	border-color: var(--primary);
+	color: var(--text-color);
+}
+
+.spa-page .spa-chip.spa-more {
+	background: var(--subtle-fg, #f3f3f3);
+}
+
+.spa-page .spa-date-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	align-items: flex-end;
+}
+
+.spa-page .spa-date-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	min-width: 120px;
+}
+
+.spa-page .spa-date-field label {
+	font-size: var(--text-sm);
+	color: var(--text-muted);
+	margin: 0;
+}
+
+.spa-page .spa-date-field select {
+	min-width: 120px;
+}
+
+.spa-page .spa-item-search {
+	min-width: 180px;
+	margin-left: auto;
+}
+
+.spa-page .spa-table-section {
+	background: var(--fg-color);
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius-md, 8px);
+	padding: 1rem 1.25rem;
+}
+
+.spa-page .spa-table-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	margin-bottom: 0.75rem;
+	flex-wrap: wrap;
+}
+
+.spa-page .spa-table-title {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	font-weight: 600;
+	font-size: var(--text-lg, 1.05rem);
+}
+
+.spa-page .spa-count-badge {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.15rem 0.55rem;
+	border-radius: 999px;
+	background: var(--primary-light, #e8f0fe);
+	color: var(--text-muted);
+	font-size: var(--text-sm);
+	font-weight: 500;
+}
+
+.spa-page .spa-table-wrap {
+	overflow: auto;
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius);
+}
+
+.spa-page table.spa-table {
+	width: 100%;
+	margin: 0;
+	border-collapse: collapse;
+}
+
+.spa-page table.spa-table th,
+.spa-page table.spa-table td {
+	padding: 0.65rem 0.85rem;
+	border-bottom: 1px solid var(--border-color);
+	vertical-align: middle;
+}
+
+.spa-page table.spa-table thead th {
+	background: var(--subtle-fg, #f8f8f8);
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.spa-page table.spa-table .spa-col-num {
+	width: 56px;
+	text-align: center;
+	color: var(--text-muted);
+}
+
+.spa-page table.spa-table .spa-col-amount {
+	text-align: right;
+	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+}
+
+.spa-page table.spa-table tbody tr:hover {
+	background: var(--subtle-fg, #fafafa);
+}
+
+.spa-page .spa-table-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-top: 0.85rem;
+	flex-wrap: wrap;
+}
+
+.spa-page .spa-pagination {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+}
+
+.spa-page .spa-page-btn {
+	min-width: 32px;
+	height: 32px;
+	padding: 0 0.5rem;
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius);
+	background: var(--control-bg, #fff);
+	cursor: pointer;
+}
+
+.spa-page .spa-page-btn.is-active {
+	background: var(--primary);
+	border-color: var(--primary);
+	color: var(--fg-color, #fff);
+}
+
+.spa-page .spa-page-btn:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.spa-page .spa-grand-total {
+	font-weight: 600;
+	font-size: var(--text-base);
+}
+
+.spa-page .spa-grand-total .spa-amount {
+	margin-left: 0.5rem;
+}
+
+.spa-page .spa-empty,
+.spa-page .spa-loading,
+.spa-page .spa-error {
+	padding: 2rem 1rem;
+	text-align: center;
+	color: var(--text-muted);
+}
+
+.spa-page .spa-error {
+	color: var(--red-500, #e24c4c);
+}
+
+.spa-page .spa-hidden {
+	display: none !important;
+}
