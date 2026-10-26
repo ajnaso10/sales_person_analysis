@@ -5,9 +5,17 @@
 
 Amount rules
 ------------
-- No item-group filter: SUM(parent.base_net_total) per customer.
-- With item-group filter: SUM(child.base_net_amount) for matching Item.item_group rows only.
-- Salesperson filter uses EXISTS on Sales Team so multi-person documents are counted once.
+- Amounts are VAT-inclusive and in company currency (base_*).
+- No item-group filter: SUM(parent.base_grand_total) per customer.
+  base_grand_total is the customer total after exclusive and inclusive tax.
+  The rounded payable (base_rounded_total) is not used.
+- With an item-group filter: each matching item row is base_net_amount plus
+  that row's non-valuation Item Wise Tax Detail amounts, scaled by
+  base_grand_total / (base_net_total + the document's customer tax) so a
+  document's rows sum to its base_grand_total. Mixed tax rates stay on the
+  rows that were taxed. See inclusive_line_amount().
+- Salesperson filter uses EXISTS on Sales Team so multi-person documents are
+  counted once. Amounts are not weighted by allocated_percentage.
 - SI and SO amounts are never combined in one result set.
 """
 
@@ -28,6 +36,9 @@ from sales_person_analysis.constants import (
 	DEFAULT_PAGE_SIZE,
 	MAX_EXPORT_ROWS,
 )
+
+# Guard for a document whose net and customer tax are both zero.
+_TAX_EPSILON = 1e-7
 
 DOCTYPE_META = {
 	"Sales Invoice": {
@@ -235,8 +246,94 @@ def _base_conditions(doctype, company, meta, year, month_nums, weeks, sales_pers
 	return conditions, values
 
 
+def inclusive_line_amount(
+	base_net_amount,
+	item_tax,
+	base_net_total,
+	invoice_tax,
+	base_grand_total,
+) -> float:
+	"""Company-currency VAT-inclusive amount for one item row.
+
+	Item rows have no tax-inclusive amount. Add that row's own non-valuation
+	Item Wise Tax Detail amounts (stored in company currency), then scale so
+	the rows of one document sum to base_grand_total.
+
+	A flat share of the invoice tax by net amount would put VAT on a
+	zero-rated line when another line is taxed. Item-wise tax avoids that.
+	The scale picks up cash / non-trade Grand Total discounts and inclusive-tax
+	rounding dust, which change base_grand_total without being written back
+	onto item nets. Net-total discounts are already inside base_net_amount.
+	"""
+	item_pre = flt(base_net_amount) + flt(item_tax)
+	invoice_pre = flt(base_net_total) + flt(invoice_tax)
+	if abs(invoice_pre) < _TAX_EPSILON:
+		return item_pre
+	return item_pre * flt(base_grand_total) / invoice_pre
+
+
+def _parent_amount_sql() -> str:
+	"""VAT-inclusive document total in company currency."""
+	return "doc.base_grand_total"
+
+
+def _item_tax_joins() -> str:
+	"""Per-row and per-document sums of customer taxes, in company currency.
+
+	Valuation-only taxes do not affect the customer total, so they are left
+	out. Document tax is joined on the parent, not the item row: a zero-rated
+	line may have no Item Wise Tax Detail row, and its scale still has to
+	include the other lines' tax.
+	"""
+	return """
+		LEFT JOIN (
+			SELECT
+				iwt.parent,
+				iwt.item_row,
+				SUM(iwt.amount) AS tax_amount
+			FROM `tabItem Wise Tax Detail` iwt
+			INNER JOIN `tabSales Taxes and Charges` stc
+				ON stc.name = iwt.tax_row
+				AND stc.parent = iwt.parent
+				AND stc.parenttype = %(parenttype)s
+			WHERE iwt.parenttype = %(parenttype)s
+				AND IFNULL(stc.category, '') != 'Valuation'
+			GROUP BY iwt.parent, iwt.item_row
+		) item_tax
+			ON item_tax.parent = doc.name
+			AND item_tax.item_row = item_row.name
+		LEFT JOIN (
+			SELECT
+				iwt.parent,
+				SUM(iwt.amount) AS tax_amount
+			FROM `tabItem Wise Tax Detail` iwt
+			INNER JOIN `tabSales Taxes and Charges` stc
+				ON stc.name = iwt.tax_row
+				AND stc.parent = iwt.parent
+				AND stc.parenttype = %(parenttype)s
+			WHERE iwt.parenttype = %(parenttype)s
+				AND IFNULL(stc.category, '') != 'Valuation'
+			GROUP BY iwt.parent
+		) doc_tax
+			ON doc_tax.parent = doc.name
+	"""
+
+
+def _item_inclusive_amount_sql() -> str:
+	"""SQL twin of inclusive_line_amount()."""
+	item_pre = "(item_row.base_net_amount + IFNULL(item_tax.tax_amount, 0))"
+	invoice_pre = "(doc.base_net_total + IFNULL(doc_tax.tax_amount, 0))"
+	return f"""
+		CASE
+			WHEN ABS({invoice_pre}) < 0.0000001 THEN {item_pre}
+			ELSE {item_pre} * doc.base_grand_total / {invoice_pre}
+		END
+	"""
+
+
 def _query_parent_totals(doctype, conditions, values, page, page_size, export):
 	where_sql = " AND ".join(conditions)
+	amount_sql = _parent_amount_sql()
 	count_row = frappe.db.sql(
 		f"""
 		SELECT COUNT(*) FROM (
@@ -252,7 +349,7 @@ def _query_parent_totals(doctype, conditions, values, page, page_size, export):
 
 	total_row = frappe.db.sql(
 		f"""
-		SELECT COALESCE(SUM(doc.base_net_total), 0)
+		SELECT COALESCE(SUM({amount_sql}), 0)
 		FROM `tab{doctype}` doc
 		WHERE {where_sql}
 		""",
@@ -266,7 +363,7 @@ def _query_parent_totals(doctype, conditions, values, page, page_size, export):
 		SELECT
 			doc.customer AS customer,
 			MAX(doc.customer_name) AS customer_name,
-			SUM(doc.base_net_total) AS amount
+			SUM({amount_sql}) AS amount
 		FROM `tab{doctype}` doc
 		WHERE {where_sql}
 		GROUP BY doc.customer
@@ -284,12 +381,14 @@ def _query_with_item_groups(doctype, meta, conditions, values, item_groups, page
 	conditions = [*conditions, "item.item_group IN %(item_groups)s"]
 	values = {**values, "item_groups": item_groups}
 	where_sql = " AND ".join(conditions)
+	amount_sql = _item_inclusive_amount_sql()
 
 	from_sql = f"""
 		FROM `tab{doctype}` doc
 		INNER JOIN `tab{item_doctype}` item_row
 			ON item_row.parent = doc.name AND item_row.parenttype = %(parenttype)s
 		INNER JOIN `tabItem` item ON item.name = item_row.item_code
+		{_item_tax_joins()}
 	"""
 
 	count_row = frappe.db.sql(
@@ -307,7 +406,7 @@ def _query_with_item_groups(doctype, meta, conditions, values, item_groups, page
 
 	total_row = frappe.db.sql(
 		f"""
-		SELECT COALESCE(SUM(item_row.base_net_amount), 0)
+		SELECT COALESCE(SUM({amount_sql}), 0)
 		{from_sql}
 		WHERE {where_sql}
 		""",
@@ -321,7 +420,7 @@ def _query_with_item_groups(doctype, meta, conditions, values, item_groups, page
 		SELECT
 			doc.customer AS customer,
 			MAX(doc.customer_name) AS customer_name,
-			SUM(item_row.base_net_amount) AS amount
+			SUM({amount_sql}) AS amount
 		{from_sql}
 		WHERE {where_sql}
 		GROUP BY doc.customer

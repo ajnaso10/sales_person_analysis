@@ -11,9 +11,27 @@ from sales_person_analysis.api.analysis import (
 	get_customer_wise_sales,
 	get_filter_options,
 	get_period_options,
+	inclusive_line_amount,
 )
 from sales_person_analysis.api.period import week_of_month, week_of_month_sql
 from sales_person_analysis.tests import utils as tu
+
+
+def _expected_item_amount(doc, item_code: str) -> float:
+	"""VAT-inclusive amount for one saved item row, from stored tax rows."""
+	item_doctype = "Sales Invoice Item" if doc.doctype == "Sales Invoice" else "Sales Order Item"
+	row_name, net = frappe.db.get_value(
+		item_doctype,
+		{"parent": doc.name, "item_code": item_code},
+		["name", "base_net_amount"],
+	)
+	return inclusive_line_amount(
+		net,
+		tu.customer_tax_amount(doc.name, doc.doctype, row_name),
+		doc.base_net_total,
+		tu.customer_tax_amount(doc.name, doc.doctype),
+		doc.base_grand_total,
+	)
 
 
 class TestAnalysisAPI(IntegrationTestCase):
@@ -139,7 +157,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 		)
 		amount = tu.amount_for_customer(result, customer)
 		self.assertIsNotNone(amount)
-		self.assertAlmostEqual(amount, flt(si.base_net_total), places=2)
+		self.assertAlmostEqual(amount, flt(si.base_grand_total), places=2)
 
 	def test_single_salesperson_match_any(self):
 		item, customer = self._require_setup()
@@ -168,7 +186,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 				}
 			)
 			self.assertAlmostEqual(
-				tu.amount_for_customer(result, customer), flt(si.base_net_total), places=2
+				tu.amount_for_customer(result, customer), flt(si.base_grand_total), places=2
 			)
 
 	def test_draft_excluded(self):
@@ -185,7 +203,9 @@ class TestAnalysisAPI(IntegrationTestCase):
 			sales_persons=[sp],
 			submit=False,
 		)
-		self.addCleanup(lambda: frappe.delete_doc("Sales Invoice", si.name, force=True, ignore_permissions=True))
+		self.addCleanup(
+			lambda: frappe.delete_doc("Sales Invoice", si.name, force=True, ignore_permissions=True)
+		)
 
 		result = get_customer_wise_sales(
 			{
@@ -239,7 +259,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 			rate=100,
 		)
 		self.addCleanup(lambda: tu.cancel_and_delete("Sales Invoice", si.name))
-		line_net = flt(frappe.db.get_value("Sales Invoice Item", {"parent": si.name}, "base_net_amount"))
+		expected = _expected_item_amount(si, item.name)
 
 		result = get_customer_wise_sales(
 			{
@@ -250,7 +270,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 				"page_size": 50,
 			}
 		)
-		self.assertAlmostEqual(tu.amount_for_customer(result, customer), line_net, places=2)
+		self.assertAlmostEqual(tu.amount_for_customer(result, customer), expected, places=2)
 
 	def test_multi_item_group_partial_sum(self):
 		item, customer = self._require_setup()
@@ -270,11 +290,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 		)
 		self.addCleanup(lambda: tu.cancel_and_delete("Sales Invoice", si.name))
 
-		line_a = flt(
-			frappe.db.get_value(
-				"Sales Invoice Item", {"parent": si.name, "item_code": item.name}, "base_net_amount"
-			)
-		)
+		expected = _expected_item_amount(si, item.name)
 		result = get_customer_wise_sales(
 			{
 				"doctype": "Sales Invoice",
@@ -286,8 +302,130 @@ class TestAnalysisAPI(IntegrationTestCase):
 		)
 		amount = tu.amount_for_customer(result, customer)
 		self.assertIsNotNone(amount)
-		self.assertAlmostEqual(amount, line_a, places=2)
-		self.assertLess(amount, flt(si.base_net_total) + 0.01)
+		self.assertAlmostEqual(amount, expected, places=2)
+		self.assertLess(amount, flt(si.base_grand_total))
+
+	def test_vat_inclusive_totals_mixed_item_rates(self):
+		"""15% on one line and 0% on another: groups follow item tax, not a net share."""
+		item, customer = self._require_setup()
+		other = tu.second_item_different_group(item.item_group)
+		if not other:
+			self.skipTest("Need a second item in another group")
+		account = tu.tax_account(self.company)
+		cc = tu.cost_center(self.company)
+		if not account or not cc:
+			self.skipTest("Need a Tax or Chargeable account and a cost center")
+
+		vat_template = tu.ensure_item_tax_template(self.company, account, "_SPA VAT 15", 15)
+		zero_template = tu.ensure_item_tax_template(self.company, account, "_SPA Zero VAT", 0)
+		sp = tu.ensure_sales_person("_SPA Cov VAT")
+		posting_date = today()
+		si = tu.make_si(
+			company_name=self.company,
+			customer=customer,
+			item=item.name,
+			posting_date=posting_date,
+			qty=1,
+			rate=100,
+			sales_persons=[sp],
+			item_tax_template=vat_template,
+			extra_items=[
+				{
+					"item_code": other.name,
+					"qty": 1,
+					"rate": 200,
+					"item_tax_template": zero_template,
+				}
+			],
+			taxes=[
+				{
+					"charge_type": "On Net Total",
+					"account_head": account,
+					"description": "VAT 15",
+					"rate": 15,
+					"cost_center": cc,
+				}
+			],
+		)
+		self.addCleanup(lambda: tu.cancel_and_delete("Sales Invoice", si.name))
+
+		self.assertGreater(flt(si.base_grand_total), flt(si.base_net_total))
+		taxed_net = flt(
+			frappe.db.get_value(
+				"Sales Invoice Item", {"parent": si.name, "item_code": item.name}, "base_net_amount"
+			)
+		)
+		zero_net = flt(
+			frappe.db.get_value(
+				"Sales Invoice Item", {"parent": si.name, "item_code": other.name}, "base_net_amount"
+			)
+		)
+		taxed_row = frappe.db.get_value(
+			"Sales Invoice Item", {"parent": si.name, "item_code": item.name}, "name"
+		)
+		zero_row = frappe.db.get_value(
+			"Sales Invoice Item", {"parent": si.name, "item_code": other.name}, "name"
+		)
+		taxed_on_account = self._tax_on_account(si.name, taxed_row, account)
+		zero_on_account = self._tax_on_account(si.name, zero_row, account)
+		self.assertGreater(taxed_on_account, 0)
+		self.assertAlmostEqual(zero_on_account, 0, places=2)
+
+		filters = {
+			"doctype": "Sales Invoice",
+			"year": getdate(posting_date).year,
+			"sales_persons": [sp],
+			"page": 1,
+			"page_size": 50,
+		}
+		full = get_customer_wise_sales(filters)
+		full_amount = tu.amount_for_customer(full, customer)
+		self.assertAlmostEqual(full_amount, flt(si.base_grand_total), places=2)
+		self.assertGreater(full_amount, flt(si.base_net_total))
+
+		taxed = get_customer_wise_sales({**filters, "item_groups": [item.item_group]})
+		zero = get_customer_wise_sales({**filters, "item_groups": [other.item_group]})
+		taxed_amount = tu.amount_for_customer(taxed, customer)
+		zero_amount = tu.amount_for_customer(zero, customer)
+		expected_taxed = _expected_item_amount(si, item.name)
+		expected_zero = _expected_item_amount(si, other.name)
+		self.assertAlmostEqual(taxed_amount, expected_taxed, places=2)
+		self.assertAlmostEqual(zero_amount, expected_zero, places=2)
+		self.assertGreater(taxed_amount, taxed_net)
+		self.assertAlmostEqual(taxed_amount + zero_amount, flt(si.base_grand_total), places=2)
+
+		# A net-share of the invoice tax would move VAT onto the zero-rated line.
+		zero_tax = tu.customer_tax_amount(si.name, "Sales Invoice", zero_row)
+		taxed_tax = tu.customer_tax_amount(si.name, "Sales Invoice", taxed_row)
+		if abs(zero_tax) < 0.01 and taxed_tax > 0.01 and flt(si.base_net_total):
+			proportional = zero_net * flt(si.base_grand_total) / flt(si.base_net_total)
+			self.assertNotAlmostEqual(zero_amount, proportional, places=2)
+			self.assertAlmostEqual(
+				zero_amount,
+				zero_net
+				* flt(si.base_grand_total)
+				/ (flt(si.base_net_total) + tu.customer_tax_amount(si.name, "Sales Invoice")),
+				places=2,
+			)
+
+	def _tax_on_account(self, parent: str, item_row: str, account: str) -> float:
+		row = frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(iwt.amount), 0)
+			FROM `tabItem Wise Tax Detail` iwt
+			INNER JOIN `tabSales Taxes and Charges` stc
+				ON stc.name = iwt.tax_row
+				AND stc.parent = iwt.parent
+				AND stc.parenttype = iwt.parenttype
+			WHERE iwt.parent = %s
+				AND iwt.parenttype = 'Sales Invoice'
+				AND iwt.item_row = %s
+				AND stc.account_head = %s
+				AND IFNULL(stc.category, '') != 'Valuation'
+			""",
+			(parent, item_row, account),
+		)
+		return flt(row[0][0]) if row else 0.0
 
 	def test_sales_order_mode_with_data(self):
 		item, customer = self._require_setup()
@@ -316,7 +454,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 		self.assertEqual(result["doctype"], "Sales Order")
 		amount = tu.amount_for_customer(result, customer)
 		self.assertIsNotNone(amount)
-		self.assertAlmostEqual(amount, flt(so.base_net_total), places=2)
+		self.assertAlmostEqual(amount, flt(so.base_grand_total), places=2)
 
 	def test_si_and_so_not_combined(self):
 		item, customer = self._require_setup()
@@ -352,7 +490,9 @@ class TestAnalysisAPI(IntegrationTestCase):
 				"page_size": 20,
 			}
 		)
-		self.assertAlmostEqual(tu.amount_for_customer(si_result, customer), flt(si.base_net_total), places=2)
+		self.assertAlmostEqual(
+			tu.amount_for_customer(si_result, customer), flt(si.base_grand_total), places=2
+		)
 
 		so_result = get_customer_wise_sales(
 			{
@@ -363,8 +503,10 @@ class TestAnalysisAPI(IntegrationTestCase):
 				"page_size": 20,
 			}
 		)
-		self.assertAlmostEqual(tu.amount_for_customer(so_result, customer), flt(so.base_net_total), places=2)
-		self.assertNotAlmostEqual(flt(si.base_net_total), flt(so.base_net_total), places=2)
+		self.assertAlmostEqual(
+			tu.amount_for_customer(so_result, customer), flt(so.base_grand_total), places=2
+		)
+		self.assertNotAlmostEqual(flt(si.base_grand_total), flt(so.base_grand_total), places=2)
 
 	def test_month_half_quarter_filters(self):
 		item, customer = self._require_setup()
@@ -395,7 +537,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 				"page_size": 20,
 			}
 		)
-		self.assertAlmostEqual(tu.amount_for_customer(matched, customer), flt(si.base_net_total), places=2)
+		self.assertAlmostEqual(tu.amount_for_customer(matched, customer), flt(si.base_grand_total), places=2)
 
 		missed = get_customer_wise_sales(
 			{
@@ -454,7 +596,9 @@ class TestAnalysisAPI(IntegrationTestCase):
 				"page_size": 20,
 			}
 		)
-		self.assertAlmostEqual(tu.amount_for_customer(only_w3, customer), flt(si_w3.base_net_total), places=2)
+		self.assertAlmostEqual(
+			tu.amount_for_customer(only_w3, customer), flt(si_w3.base_grand_total), places=2
+		)
 
 		only_w1 = get_customer_wise_sales(
 			{
@@ -467,7 +611,9 @@ class TestAnalysisAPI(IntegrationTestCase):
 				"page_size": 20,
 			}
 		)
-		self.assertAlmostEqual(tu.amount_for_customer(only_w1, customer), flt(si_w1.base_net_total), places=2)
+		self.assertAlmostEqual(
+			tu.amount_for_customer(only_w1, customer), flt(si_w1.base_grand_total), places=2
+		)
 
 		week5_day = f"{year}-09-29"
 		si_w5 = tu.make_si(
@@ -491,7 +637,9 @@ class TestAnalysisAPI(IntegrationTestCase):
 				"page_size": 20,
 			}
 		)
-		self.assertAlmostEqual(tu.amount_for_customer(only_w5, customer), flt(si_w5.base_net_total), places=2)
+		self.assertAlmostEqual(
+			tu.amount_for_customer(only_w5, customer), flt(si_w5.base_grand_total), places=2
+		)
 
 	def test_calendar_week_sql_matches_python_for_2026(self):
 		"""Run the MariaDB week expression for every day of 2026, including Oct and Aug."""

@@ -69,6 +69,77 @@ def second_item_different_group(exclude_group: str):
 	)
 
 
+def tax_account(company_name: str) -> str | None:
+	"""A non-group Tax or Chargeable account for a sales tax row."""
+	return frappe.db.get_value(
+		"Account",
+		{
+			"company": company_name,
+			"is_group": 0,
+			"disabled": 0,
+			"account_type": ["in", ["Tax", "Chargeable"]],
+		},
+		"name",
+		order_by="name asc",
+	)
+
+
+def cost_center(company_name: str) -> str | None:
+	cost_center_name = frappe.db.get_value("Company", company_name, "cost_center")
+	if cost_center_name:
+		return cost_center_name
+	return frappe.db.get_value(
+		"Cost Center",
+		{"company": company_name, "is_group": 0, "disabled": 0},
+		"name",
+		order_by="name asc",
+	)
+
+
+def ensure_item_tax_template(company_name: str, account: str, title: str, tax_rate: float) -> str:
+	"""Item Tax Template that overrides one tax account. Reused by title."""
+	existing = frappe.db.get_value("Item Tax Template", {"title": title, "company": company_name}, "name")
+	if existing:
+		return existing
+	doc = frappe.get_doc(
+		{
+			"doctype": "Item Tax Template",
+			"title": title,
+			"company": company_name,
+			"taxes": [{"tax_type": account, "tax_rate": tax_rate}],
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return doc.name
+
+
+def customer_tax_amount(parent: str, parenttype: str, item_row: str | None = None) -> float:
+	"""Sum of non-valuation Item Wise Tax Detail amounts, in company currency."""
+	conditions = [
+		"iwt.parent = %(parent)s",
+		"iwt.parenttype = %(parenttype)s",
+		"IFNULL(stc.category, '') != 'Valuation'",
+	]
+	values = {"parent": parent, "parenttype": parenttype}
+	if item_row:
+		conditions.append("iwt.item_row = %(item_row)s")
+		values["item_row"] = item_row
+	where_sql = " AND ".join(conditions)
+	row = frappe.db.sql(
+		f"""
+		SELECT COALESCE(SUM(iwt.amount), 0)
+		FROM `tabItem Wise Tax Detail` iwt
+		INNER JOIN `tabSales Taxes and Charges` stc
+			ON stc.name = iwt.tax_row
+			AND stc.parent = iwt.parent
+			AND stc.parenttype = iwt.parenttype
+		WHERE {where_sql}
+		""",
+		values,
+	)
+	return flt(row[0][0]) if row else 0.0
+
+
 def set_sales_team(parent: str, sales_persons: list[str], parenttype: str = "Sales Invoice"):
 	frappe.db.delete("Sales Team", {"parent": parent, "parenttype": parenttype})
 	pct = flt(100 / len(sales_persons))
@@ -104,6 +175,8 @@ def make_si(
 	rate: float = 100,
 	sales_persons: list[str] | None = None,
 	extra_items: list[dict] | None = None,
+	taxes: list[dict] | None = None,
+	item_tax_template: str | None = None,
 	submit: bool = True,
 	is_return: int = 0,
 ):
@@ -114,9 +187,14 @@ def make_si(
 	si.due_date = posting_date
 	si.set_posting_time = 1
 	si.is_return = is_return
-	si.append("items", {"item_code": item, "qty": qty, "rate": rate})
+	first_item = {"item_code": item, "qty": qty, "rate": rate}
+	if item_tax_template:
+		first_item["item_tax_template"] = item_tax_template
+	si.append("items", first_item)
 	for row in extra_items or []:
 		si.append("items", row)
+	for row in taxes or []:
+		si.append("taxes", row)
 	if sales_persons:
 		pct = flt(100 / len(sales_persons))
 		for sp in sales_persons:

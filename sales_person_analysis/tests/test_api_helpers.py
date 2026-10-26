@@ -150,6 +150,101 @@ class TestApiHelpers(UnitTestCase):
 			years = analysis_mod._get_years("Sales Invoice", "Any Co")
 		self.assertEqual(years, [getdate().year])
 
+	def test_inclusive_line_amount_keeps_mixed_rates(self):
+		# Item A net 100 + 15 tax, item B net 200 + 0 tax, grand 315.
+		# A net share of the invoice tax would be 105 and 210.
+		taxed = analysis_mod.inclusive_line_amount(100, 15, 300, 15, 315)
+		zero_rated = analysis_mod.inclusive_line_amount(200, 0, 300, 15, 315)
+		self.assertAlmostEqual(taxed, 115)
+		self.assertAlmostEqual(zero_rated, 200)
+		self.assertAlmostEqual(taxed + zero_rated, 315)
+		self.assertNotAlmostEqual(taxed, 105)
+		self.assertNotAlmostEqual(zero_rated, 210)
+
+	def test_inclusive_line_amount_scales_grand_total_discount(self):
+		# Cash / non-trade discount leaves item nets and item tax unchanged
+		# and reduces base_grand_total. 10% off 315 -> 283.5.
+		taxed = analysis_mod.inclusive_line_amount(100, 15, 300, 15, 283.5)
+		zero_rated = analysis_mod.inclusive_line_amount(200, 0, 300, 15, 283.5)
+		self.assertAlmostEqual(taxed, 103.5)
+		self.assertAlmostEqual(zero_rated, 180)
+		self.assertAlmostEqual(taxed + zero_rated, 283.5)
+
+	def test_inclusive_line_amount_no_tax_and_zero_base(self):
+		self.assertAlmostEqual(analysis_mod.inclusive_line_amount(200, 0, 200, 0, 200), 200)
+		self.assertAlmostEqual(analysis_mod.inclusive_line_amount(100, 15, 100, 15, 115), 115)
+		self.assertAlmostEqual(analysis_mod.inclusive_line_amount(0, 0, 0, 0, 0), 0)
+		self.assertAlmostEqual(analysis_mod.inclusive_line_amount(10, 0, 0, 0, 0), 10)
+
+	def test_parent_amount_sql_is_vat_inclusive(self):
+		sql = analysis_mod._parent_amount_sql()
+		self.assertIn("base_grand_total", sql)
+		self.assertNotIn("base_net_total", sql)
+		self.assertNotIn("base_rounded_total", sql)
+
+	def test_item_inclusive_sql_uses_item_wise_tax(self):
+		joins = analysis_mod._item_tax_joins()
+		expr = analysis_mod._item_inclusive_amount_sql()
+		self.assertIn("tabItem Wise Tax Detail", joins)
+		self.assertIn("!= 'Valuation'", joins)
+		self.assertIn("doc_tax", joins)
+		self.assertIn("item_tax", joins)
+		self.assertIn("base_grand_total", expr)
+		self.assertIn("base_net_amount", expr)
+		self.assertIn("base_net_total", expr)
+
+	def test_parent_query_sums_base_grand_total(self):
+		captured = []
+
+		def fake_sql(query, *args, **kwargs):
+			captured.append(query)
+			if "COUNT" in query:
+				return [(0,)]
+			if "COALESCE" in query:
+				return [(0,)]
+			return []
+
+		with patch("sales_person_analysis.api.analysis.frappe.db.sql", side_effect=fake_sql):
+			analysis_mod._query_parent_totals(
+				"Sales Invoice",
+				["doc.docstatus = 1"],
+				{"parenttype": "Sales Invoice"},
+				1,
+				20,
+				0,
+			)
+		joined = " ".join(captured)
+		self.assertIn("doc.base_grand_total", joined)
+		self.assertNotIn("base_net_total", joined)
+
+	def test_item_group_query_sums_inclusive_lines(self):
+		captured = []
+
+		def fake_sql(query, *args, **kwargs):
+			captured.append(query)
+			if "COUNT" in query:
+				return [(0,)]
+			if "COALESCE" in query:
+				return [(0,)]
+			return []
+
+		with patch("sales_person_analysis.api.analysis.frappe.db.sql", side_effect=fake_sql):
+			analysis_mod._query_with_item_groups(
+				"Sales Invoice",
+				analysis_mod.DOCTYPE_META["Sales Invoice"],
+				["doc.docstatus = 1"],
+				{"parenttype": "Sales Invoice"},
+				["Products"],
+				1,
+				20,
+				0,
+			)
+		joined = " ".join(captured)
+		self.assertIn("tabItem Wise Tax Detail", joined)
+		self.assertIn("!= 'Valuation'", joined)
+		self.assertIn("doc.base_grand_total", joined)
+		self.assertNotIn("SUM(item_row.base_net_amount)", joined)
+
 
 def frappe_dict(**kwargs):
 	import frappe
