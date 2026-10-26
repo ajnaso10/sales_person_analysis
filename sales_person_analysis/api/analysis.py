@@ -10,10 +10,12 @@ Amount rules
   base_grand_total is the customer total after exclusive and inclusive tax.
   The rounded payable (base_rounded_total) is not used.
 - With an item-group filter: each matching item row is base_net_amount plus
-  that row's non-valuation Item Wise Tax Detail amounts, scaled by
+  that row's Item Wise Tax Detail amounts, scaled by
   base_grand_total / (base_net_total + the document's customer tax) so a
   document's rows sum to its base_grand_total. Mixed tax rates stay on the
-  rows that were taxed. See inclusive_line_amount().
+  rows that were taxed. See inclusive_line_amount(). Sales Taxes and Charges
+  has no category column in ERPNext v16, so sales tax rows are not filtered
+  by tax category.
 - Salesperson filter uses EXISTS on Sales Team so multi-person documents are
   counted once. Amounts are not weighted by allocated_percentage.
 - SI and SO amounts are never combined in one result set.
@@ -255,9 +257,9 @@ def inclusive_line_amount(
 ) -> float:
 	"""Company-currency VAT-inclusive amount for one item row.
 
-	Item rows have no tax-inclusive amount. Add that row's own non-valuation
-	Item Wise Tax Detail amounts (stored in company currency), then scale so
-	the rows of one document sum to base_grand_total.
+	Item rows have no tax-inclusive amount. Add that row's own Item Wise Tax
+	Detail amounts (stored in company currency), then scale so the rows of
+	one document sum to base_grand_total.
 
 	A flat share of the invoice tax by net amount would put VAT on a
 	zero-rated line when another line is taxed. Item-wise tax avoids that.
@@ -280,10 +282,10 @@ def _parent_amount_sql() -> str:
 def _item_tax_joins() -> str:
 	"""Per-row and per-document sums of customer taxes, in company currency.
 
-	Valuation-only taxes do not affect the customer total, so they are left
-	out. Document tax is joined on the parent, not the item row: a zero-rated
+	Document tax is joined on the parent, not the item row: a zero-rated
 	line may have no Item Wise Tax Detail row, and its scale still has to
-	include the other lines' tax.
+	include the other lines' tax. Sales Taxes and Charges has no category
+	column in ERPNext v16, so the join does not filter on one.
 	"""
 	return """
 		LEFT JOIN (
@@ -297,7 +299,6 @@ def _item_tax_joins() -> str:
 				AND stc.parent = iwt.parent
 				AND stc.parenttype = %(parenttype)s
 			WHERE iwt.parenttype = %(parenttype)s
-				AND IFNULL(stc.category, '') != 'Valuation'
 			GROUP BY iwt.parent, iwt.item_row
 		) item_tax
 			ON item_tax.parent = doc.name
@@ -312,7 +313,6 @@ def _item_tax_joins() -> str:
 				AND stc.parent = iwt.parent
 				AND stc.parenttype = %(parenttype)s
 			WHERE iwt.parenttype = %(parenttype)s
-				AND IFNULL(stc.category, '') != 'Valuation'
 			GROUP BY iwt.parent
 		) doc_tax
 			ON doc_tax.parent = doc.name

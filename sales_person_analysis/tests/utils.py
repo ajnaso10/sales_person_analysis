@@ -36,6 +36,40 @@ def restore_user_company(previous) -> None:
 		frappe.defaults.clear_user_default("company")
 
 
+def ensure_customer(customer_name: str) -> str:
+	"""A Customer used only by these tests, so site invoices cannot leak in.
+
+	Customer autoname is a naming series, so the document name is returned.
+	Group and territory are copied from an existing customer on the site.
+	"""
+	existing = frappe.db.get_value("Customer", {"customer_name": customer_name}, "name")
+	if existing:
+		return existing
+	template = frappe.db.get_value(
+		"Customer",
+		{"disabled": 0},
+		["customer_group", "territory"],
+		as_dict=True,
+		order_by="creation asc",
+	)
+	series_field = frappe.get_meta("Customer").get_field("naming_series")
+	naming_series = ""
+	if series_field and series_field.options:
+		naming_series = next((opt.strip() for opt in series_field.options.split("\n") if opt.strip()), "")
+	doc = frappe.get_doc(
+		{
+			"doctype": "Customer",
+			"naming_series": naming_series or None,
+			"customer_name": customer_name,
+			"customer_type": "Company",
+			"customer_group": template.customer_group if template else None,
+			"territory": template.territory if template else None,
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	return doc.name
+
+
 def ensure_sales_person(name: str) -> str:
 	if not frappe.db.exists("Sales Person", name):
 		frappe.get_doc({"doctype": "Sales Person", "sales_person_name": name, "enabled": 1}).insert(
@@ -114,11 +148,13 @@ def ensure_item_tax_template(company_name: str, account: str, title: str, tax_ra
 
 
 def customer_tax_amount(parent: str, parenttype: str, item_row: str | None = None) -> float:
-	"""Sum of non-valuation Item Wise Tax Detail amounts, in company currency."""
+	"""Sum of Item Wise Tax Detail amounts, in company currency.
+
+	Sales Taxes and Charges has no category column in ERPNext v16.
+	"""
 	conditions = [
 		"iwt.parent = %(parent)s",
 		"iwt.parenttype = %(parenttype)s",
-		"IFNULL(stc.category, '') != 'Valuation'",
 	]
 	values = {"parent": parent, "parenttype": parenttype}
 	if item_row:

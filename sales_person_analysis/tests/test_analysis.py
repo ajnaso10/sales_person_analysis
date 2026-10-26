@@ -248,7 +248,9 @@ class TestAnalysisAPI(IntegrationTestCase):
 		self.assertIsNone(tu.amount_for_customer(result, customer))
 
 	def test_item_group_line_amounts(self):
-		item, customer = self._require_setup()
+		item, _shared = self._require_setup()
+		customer = tu.ensure_customer("_SPA Item Group Line")
+		sp = tu.ensure_sales_person("_SPA Cov ItemGroup")
 		posting_date = today()
 		si = tu.make_si(
 			company_name=self.company,
@@ -257,6 +259,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 			posting_date=posting_date,
 			qty=2,
 			rate=100,
+			sales_persons=[sp],
 		)
 		self.addCleanup(lambda: tu.cancel_and_delete("Sales Invoice", si.name))
 		expected = _expected_item_amount(si, item.name)
@@ -265,6 +268,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 			{
 				"doctype": "Sales Invoice",
 				"year": getdate(posting_date).year,
+				"sales_persons": [sp],
 				"item_groups": [item.item_group],
 				"page": 1,
 				"page_size": 50,
@@ -273,11 +277,13 @@ class TestAnalysisAPI(IntegrationTestCase):
 		self.assertAlmostEqual(tu.amount_for_customer(result, customer), expected, places=2)
 
 	def test_multi_item_group_partial_sum(self):
-		item, customer = self._require_setup()
+		item, _shared = self._require_setup()
 		other = tu.second_item_different_group(item.item_group)
 		if not other:
 			self.skipTest("Need a second item in another group")
 
+		customer = tu.ensure_customer("_SPA Item Group Partial")
+		sp = tu.ensure_sales_person("_SPA Cov ItemGroup Partial")
 		posting_date = today()
 		si = tu.make_si(
 			company_name=self.company,
@@ -286,6 +292,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 			posting_date=posting_date,
 			qty=1,
 			rate=100,
+			sales_persons=[sp],
 			extra_items=[{"item_code": other.name, "qty": 1, "rate": 200}],
 		)
 		self.addCleanup(lambda: tu.cancel_and_delete("Sales Invoice", si.name))
@@ -295,6 +302,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 			{
 				"doctype": "Sales Invoice",
 				"year": getdate(posting_date).year,
+				"sales_persons": [sp],
 				"item_groups": [item.item_group],
 				"page": 1,
 				"page_size": 100,
@@ -421,7 +429,6 @@ class TestAnalysisAPI(IntegrationTestCase):
 				AND iwt.parenttype = 'Sales Invoice'
 				AND iwt.item_row = %s
 				AND stc.account_head = %s
-				AND IFNULL(stc.category, '') != 'Valuation'
 			""",
 			(parent, item_row, account),
 		)

@@ -186,7 +186,7 @@ class TestApiHelpers(UnitTestCase):
 		joins = analysis_mod._item_tax_joins()
 		expr = analysis_mod._item_inclusive_amount_sql()
 		self.assertIn("tabItem Wise Tax Detail", joins)
-		self.assertIn("!= 'Valuation'", joins)
+		self.assertNotIn("category", joins)
 		self.assertIn("doc_tax", joins)
 		self.assertIn("item_tax", joins)
 		self.assertIn("base_grand_total", expr)
@@ -241,7 +241,7 @@ class TestApiHelpers(UnitTestCase):
 			)
 		joined = " ".join(captured)
 		self.assertIn("tabItem Wise Tax Detail", joined)
-		self.assertIn("!= 'Valuation'", joined)
+		self.assertNotIn("category", joined)
 		self.assertIn("doc.base_grand_total", joined)
 		self.assertNotIn("SUM(item_row.base_net_amount)", joined)
 
