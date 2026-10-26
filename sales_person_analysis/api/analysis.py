@@ -21,6 +21,7 @@ from sales_person_analysis.api.period import (
 	hierarchy_options,
 	parse_week_list,
 	resolve_months,
+	week_of_month_sql,
 )
 from sales_person_analysis.constants import (
 	ALLOWED_DOCTYPES,
@@ -55,14 +56,14 @@ def get_filter_options(doctype: str = "Sales Invoice"):
 		"sales_persons": _get_sales_persons(),
 		"item_groups": _get_item_groups(),
 		"years": _get_years(doctype, company),
-		"period": hierarchy_options(),
+		"period": hierarchy_options(year=getdate().year),
 	}
 
 
 @frappe.whitelist()
-def get_period_options(half=None, quarter=None):
-	"""Cascading Half → Quarter → Month options for the filter UI."""
-	return hierarchy_options(half=half, quarter=quarter)
+def get_period_options(half=None, quarter=None, year=None):
+	"""Cascading Half → Quarter → Month options, plus week labels for year."""
+	return hierarchy_options(half=half, quarter=quarter, year=year)
 
 
 @frappe.whitelist()
@@ -139,7 +140,10 @@ def _validate_doctype(doctype: str) -> str:
 
 
 def _get_company() -> str:
-	company = frappe.defaults.get_user_default("Company")
+	# get_user_default("Company") reads the scrubbed key "company" on Frappe v16.
+	company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+		"Global Defaults", "default_company"
+	)
 	if not company:
 		frappe.throw(_("Please set a default Company in your user defaults"))
 	return company
@@ -211,7 +215,8 @@ def _base_conditions(doctype, company, meta, year, month_nums, weeks, sales_pers
 		values["months"] = month_nums
 
 	if weeks:
-		conditions.append(f"FLOOR((DAY(doc.`{date_field}`) - 1) / 7) + 1 IN %(weeks)s")
+		# Sunday-start week-of-month (WEEK_START_DAYOFWEEK). See period.week_of_month_sql.
+		conditions.append(f"{week_of_month_sql(f'doc.`{date_field}`')} IN %(weeks)s")
 		values["weeks"] = weeks
 
 	if sales_persons:

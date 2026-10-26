@@ -18,13 +18,39 @@ class TestAnalysisPermissions(IntegrationTestCase):
 	def setUpClass(cls):
 		super().setUpClass()
 		cls.company = tu.company()
+		cls._previous_company_default = tu.current_user_company()
 		if cls.company:
-			frappe.defaults.set_user_default("Company", cls.company)
+			frappe.defaults.set_user_default("company", cls.company)
+			# setUpClass already committed. Commit again so a later rollback
+			# cannot drop this default before the class finishes.
+			frappe.db.commit()
+
+	@classmethod
+	def tearDownClass(cls):
+		if getattr(cls, "company", None):
+			tu.restore_user_company(getattr(cls, "_previous_company_default", None))
+			# Class cleanup rolls back the open transaction afterwards.
+			frappe.db.commit()
+		super().tearDownClass()
 
 	def test_missing_company_throws(self):
-		with patch(
-			"sales_person_analysis.api.analysis.frappe.defaults.get_user_default",
-			return_value=None,
+		# Neither the user default nor Global Defaults supplies a company.
+		real_single = frappe.db.get_single_value
+
+		def no_global_company(doctype, fieldname, *args, **kwargs):
+			if doctype == "Global Defaults" and fieldname == "default_company":
+				return None
+			return real_single(doctype, fieldname, *args, **kwargs)
+
+		with (
+			patch(
+				"sales_person_analysis.api.analysis.frappe.defaults.get_user_default",
+				return_value=None,
+			),
+			patch(
+				"sales_person_analysis.api.analysis.frappe.db.get_single_value",
+				side_effect=no_global_company,
+			),
 		):
 			with self.assertRaises(frappe.ValidationError):
 				get_filter_options("Sales Invoice")

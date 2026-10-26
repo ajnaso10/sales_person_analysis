@@ -3,13 +3,27 @@
 
 """Calendar period hierarchy helpers (Year → Half → Quarter → Month → Week-of-month).
 
-Week numbering matches Sales by Customer: FLOOR((DAY(date)-1)/7)+1 (days 1–7 → week 1).
-Only weeks 1–5 are offered; week 6 never matches a real calendar day.
+Weeks are calendar weeks inside the month, Sunday-Saturday by default
+(`WEEK_START_DAYOFWEEK` in constants; MariaDB DAYOFWEEK, 1=Sunday). Week 1
+contains the 1st and ends the day before the next week start. A month spans
+up to 6 such weeks, so weeks 1-6 are offered.
+
+The MariaDB filter (Sunday start) is equivalent to:
+
+    FLOOR((DAY(d) - 1 + (DAYOFWEEK(DATE_SUB(d, INTERVAL DAY(d) - 1 DAY)) - 1)) / 7) + 1
+
+`week_of_month_sql()` writes that with MOD so changing the week-start constant
+to Monday (2) stays correct when the 1st falls before the week start.
 """
 
 from __future__ import annotations
 
+import calendar
+from datetime import date, datetime
+
 from frappe.utils import cint
+
+from sales_person_analysis import constants
 
 MONTH_ABBR_TO_NUM = {
 	"Jan": 1,
@@ -47,7 +61,93 @@ HALF_TO_QUARTERS = {
 
 ALL_QUARTERS = ("Q1", "Q2", "Q3", "Q4")
 ALL_MONTHS = tuple(range(1, 13))
-WEEK_OPTIONS = (1, 2, 3, 4, 5)
+WEEK_OPTIONS = (1, 2, 3, 4, 5, 6)
+
+
+def _week_start(week_start: int | None = None) -> int:
+	start = constants.WEEK_START_DAYOFWEEK if week_start is None else week_start
+	start = int(start)
+	if start < 1 or start > 7:
+		raise ValueError("Week start must be a DAYOFWEEK value from 1 (Sunday) to 7 (Saturday)")
+	return start
+
+
+def _as_date(value) -> date:
+	if isinstance(value, datetime):
+		return value.date()
+	if isinstance(value, date):
+		return value
+	return date.fromisoformat(str(value).strip()[:10])
+
+
+def _dayofweek(value: date) -> int:
+	"""MariaDB DAYOFWEEK: 1=Sunday ... 7=Saturday."""
+	return (value.weekday() + 1) % 7 + 1
+
+
+def week_of_month(value, week_start: int | None = None) -> int:
+	"""Week-of-month (1-6) using WEEK_START_DAYOFWEEK unless week_start is passed.
+
+	The 1st is always in week 1. Each later week starts on WEEK_START_DAYOFWEEK
+	(Sunday by default) and runs seven days, clipped to the month.
+	"""
+	current = _as_date(value)
+	start = _week_start(week_start)
+	first = current.replace(day=1)
+	offset = (_dayofweek(first) - start + 7) % 7
+	return (current.day - 1 + offset) // 7 + 1
+
+
+def week_of_month_sql(date_expr: str) -> str:
+	"""MariaDB expression equivalent to week_of_month() for a date SQL expression.
+
+	`date_expr` must be a trusted column or literal, not user input. The week
+	start is WEEK_START_DAYOFWEEK (1=Sunday). For Sunday the offset
+	MOD(DAYOFWEEK(first) - 1 + 7, 7) equals DAYOFWEEK(first) - 1.
+	"""
+	start = _week_start()
+	first = f"DATE_SUB({date_expr}, INTERVAL DAY({date_expr}) - 1 DAY)"
+	offset = f"MOD(DAYOFWEEK({first}) - {start} + 7, 7)"
+	return f"FLOOR((DAY({date_expr}) - 1 + {offset}) / 7) + 1"
+
+
+def week_ranges(year: int, month: int) -> dict[int, tuple[int, int]]:
+	"""Map week-of-month → (first day, last day) for days that exist in the month."""
+	last_day = calendar.monthrange(int(year), int(month))[1]
+	found: dict[int, tuple[int, int]] = {}
+	for day in range(1, last_day + 1):
+		week = week_of_month(date(int(year), int(month), day))
+		if week not in found:
+			found[week] = (day, day)
+		else:
+			found[week] = (found[week][0], day)
+	return found
+
+
+def format_week_label(year: int, month: int, week: int) -> str | None:
+	"""Label such as 'Week 1 (1-3 Oct)', or None when that week has no days."""
+	span = week_ranges(year, month).get(int(week))
+	abbr = NUM_TO_MONTH_ABBR.get(int(month))
+	if not span or not abbr:
+		return None
+	start, end = span
+	if start == end:
+		return f"Week {int(week)} ({start} {abbr})"
+	return f"Week {int(week)} ({start}-{end} {abbr})"
+
+
+def week_labels_for_year(year: int) -> dict[str, dict[str, str]]:
+	"""Per-month chip labels keyed by month abbreviation and week number string."""
+	labels: dict[str, dict[str, str]] = {}
+	for month in ALL_MONTHS:
+		abbr = NUM_TO_MONTH_ABBR[month]
+		month_labels: dict[str, str] = {}
+		for week in week_ranges(year, month):
+			label = format_week_label(year, month, week)
+			if label:
+				month_labels[str(week)] = label
+		labels[abbr] = month_labels
+	return labels
 
 
 def normalize_half(value) -> str | None:
@@ -129,22 +229,31 @@ def month_labels(month_nums: list[int]) -> list[str]:
 	return [NUM_TO_MONTH_ABBR[m] for m in month_nums if m in NUM_TO_MONTH_ABBR]
 
 
-def hierarchy_options(half=None, quarter=None) -> dict:
-	"""Options for cascading UI controls."""
+def hierarchy_options(half=None, quarter=None, year=None) -> dict:
+	"""Options for cascading UI controls.
+
+	When year is set, week_labels gives the date span of each week in that
+	year ('Week 1 (1-3 Oct)') for months that contain the week.
+	"""
 	half_n = normalize_half(half)
 	quarter_n = normalize_quarter(quarter)
 	quarters = allowed_quarters(half_n)
 	if quarter_n and quarter_n not in quarters:
 		quarter_n = None
 	months = allowed_month_nums(half_n, quarter_n)
-	return {
+	payload = {
 		"halves": ["All", "H1", "H2"],
 		"quarters": ["All", *quarters],
 		"months": month_labels(months),
 		"weeks": list(WEEK_OPTIONS),
+		"week_start": constants.WEEK_START_DAYOFWEEK,
 		"half": half_n or "All",
 		"quarter": quarter_n or "All",
 	}
+	year_n = cint(year)
+	if year_n:
+		payload["week_labels"] = week_labels_for_year(year_n)
+	return payload
 
 
 def _as_list(value) -> list:

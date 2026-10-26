@@ -10,9 +10,30 @@ from frappe.utils import flt
 
 
 def company() -> str | None:
-	return frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
-		"Global Defaults", "default_company"
-	)
+	"""A Company on this site.
+
+	Does not read the user default or Global Defaults. Callers that need the
+	session company set it themselves with set_user_default("company", ...).
+	Frappe v16's get_user_default("Company") reads that lowercase key.
+	"""
+	rows = frappe.get_all("Company", pluck="name", limit=1, order_by="creation asc")
+	return rows[0] if rows else None
+
+
+def current_user_company():
+	"""User-level `company` default only, ignoring Global Defaults."""
+	value = frappe.defaults.get_defaults_for(frappe.session.user).get("company")
+	if isinstance(value, list | tuple):
+		return value[0] if len(value) == 1 else None
+	return value
+
+
+def restore_user_company(previous) -> None:
+	"""Put back the user-level company default captured by current_user_company()."""
+	if previous:
+		frappe.defaults.set_user_default("company", previous)
+	else:
+		frappe.defaults.clear_user_default("company")
 
 
 def ensure_sales_person(name: str) -> str:

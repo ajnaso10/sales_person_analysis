@@ -12,6 +12,7 @@ from sales_person_analysis.api.analysis import (
 	get_filter_options,
 	get_period_options,
 )
+from sales_person_analysis.api.period import week_of_month, week_of_month_sql
 from sales_person_analysis.tests import utils as tu
 
 
@@ -20,8 +21,20 @@ class TestAnalysisAPI(IntegrationTestCase):
 	def setUpClass(cls):
 		super().setUpClass()
 		cls.company = tu.company()
+		cls._previous_company_default = tu.current_user_company()
 		if cls.company:
-			frappe.defaults.set_user_default("Company", cls.company)
+			frappe.defaults.set_user_default("company", cls.company)
+			# setUpClass already committed. Commit again so a later rollback
+			# cannot drop this default before the class finishes.
+			frappe.db.commit()
+
+	@classmethod
+	def tearDownClass(cls):
+		if getattr(cls, "company", None):
+			tu.restore_user_company(getattr(cls, "_previous_company_default", None))
+			# Class cleanup rolls back the open transaction afterwards.
+			frappe.db.commit()
+		super().tearDownClass()
 
 	def _require_setup(self):
 		if not self.company:
@@ -57,13 +70,21 @@ class TestAnalysisAPI(IntegrationTestCase):
 			self.assertIsInstance(opts["sales_persons"], list)
 			self.assertIsInstance(opts["item_groups"], list)
 			self.assertIn(getdate().year, opts["years"])
-			self.assertEqual(opts["period"]["weeks"], [1, 2, 3, 4, 5])
+			self.assertEqual(opts["period"]["weeks"], [1, 2, 3, 4, 5, 6])
+			self.assertEqual(opts["period"]["week_start"], 1)
+			self.assertTrue(opts["period"].get("week_labels"))
 
 	def test_get_period_options_whitelist(self):
 		opts = get_period_options(half="H1", quarter="Q3")
 		self.assertEqual(opts["half"], "H1")
 		self.assertEqual(opts["quarter"], "All")
 		self.assertNotIn("Q3", opts["quarters"])
+		self.assertEqual(opts["weeks"], [1, 2, 3, 4, 5, 6])
+
+		labeled = get_period_options(half="H2", quarter="Q4", year=2026)
+		self.assertEqual(labeled["week_labels"]["Oct"]["1"], "Week 1 (1-3 Oct)")
+		self.assertEqual(labeled["week_labels"]["Oct"]["5"], "Week 5 (25-31 Oct)")
+		self.assertNotIn("6", labeled["week_labels"]["Oct"])
 
 	def test_empty_result_far_future_year(self):
 		if not self.company:
@@ -392,7 +413,15 @@ class TestAnalysisAPI(IntegrationTestCase):
 		item, customer = self._require_setup()
 		sp = tu.ensure_sales_person("_SPA Cov Week")
 		year = getdate().year
-		# Day 15 → week 3; day 2 → week 1
+		# Sunday-start weeks: the 15th is week 3 and the 29th is week 5 in every month,
+		# so 29 Sep stays on the week-5 filter. The 2nd is week 1 unless the 1st is Saturday.
+		early = getdate(f"{year}-09-02")
+		mid = getdate(f"{year}-09-15")
+		late = getdate(f"{year}-09-29")
+		early_week = week_of_month(early)
+		self.assertEqual(week_of_month(mid), 3)
+		self.assertEqual(week_of_month(late), 5)
+		self.assertIn(early_week, (1, 2))
 		si_w3 = tu.make_si(
 			company_name=self.company,
 			customer=customer,
@@ -432,7 +461,7 @@ class TestAnalysisAPI(IntegrationTestCase):
 				"doctype": "Sales Invoice",
 				"year": year,
 				"months": ["Sep"],
-				"weeks": [1],
+				"weeks": [early_week],
 				"sales_persons": [sp],
 				"page": 1,
 				"page_size": 20,
@@ -463,6 +492,41 @@ class TestAnalysisAPI(IntegrationTestCase):
 			}
 		)
 		self.assertAlmostEqual(tu.amount_for_customer(only_w5, customer), flt(si_w5.base_net_total), places=2)
+
+	def test_calendar_week_sql_matches_python_for_2026(self):
+		"""Run the MariaDB week expression for every day of 2026, including Oct and Aug."""
+		cases = {
+			"2026-10-03": 1,
+			"2026-10-04": 2,
+			"2026-10-10": 2,
+			"2026-10-11": 3,
+			"2026-10-31": 5,
+			"2026-08-01": 1,
+			"2026-08-02": 2,
+			"2026-08-30": 6,
+			"2026-08-31": 6,
+		}
+		for day, week in cases.items():
+			self.assertEqual(week_of_month(day), week, day)
+
+		expr = week_of_month_sql("d")
+		rows = frappe.db.sql(
+			f"""
+			WITH RECURSIVE days AS (
+				SELECT DATE('2026-01-01') AS d
+				UNION ALL
+				SELECT DATE_ADD(d, INTERVAL 1 DAY) FROM days WHERE d < DATE('2026-12-31')
+			)
+			SELECT d, {expr} AS week_no
+			FROM days
+			"""
+		)
+		self.assertEqual(len(rows), 365)
+		for day, week_no in rows:
+			key = str(day)[:10]
+			self.assertEqual(int(week_no), week_of_month(key), key)
+			if key in cases:
+				self.assertEqual(int(week_no), cases[key], key)
 
 	def test_grand_total_matches_sum_and_pagination(self):
 		if not self.company:
