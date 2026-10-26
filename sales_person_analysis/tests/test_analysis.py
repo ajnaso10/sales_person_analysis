@@ -21,8 +21,20 @@ class TestAnalysisAPI(IntegrationTestCase):
 	def setUpClass(cls):
 		super().setUpClass()
 		cls.company = tu.company()
+		cls._previous_company_default = tu.current_user_company()
 		if cls.company:
-			frappe.defaults.set_user_default("Company", cls.company)
+			frappe.defaults.set_user_default("company", cls.company)
+			# setUpClass already committed. Commit again so a later rollback
+			# cannot drop this default before the class finishes.
+			frappe.db.commit()
+
+	@classmethod
+	def tearDownClass(cls):
+		if getattr(cls, "company", None):
+			tu.restore_user_company(getattr(cls, "_previous_company_default", None))
+			# Class cleanup rolls back the open transaction afterwards.
+			frappe.db.commit()
+		super().tearDownClass()
 
 	def _require_setup(self):
 		if not self.company:

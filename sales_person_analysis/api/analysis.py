@@ -140,7 +140,10 @@ def _validate_doctype(doctype: str) -> str:
 
 
 def _get_company() -> str:
-	company = frappe.defaults.get_user_default("Company")
+	# get_user_default("Company") reads the scrubbed key "company" on Frappe v16.
+	company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+		"Global Defaults", "default_company"
+	)
 	if not company:
 		frappe.throw(_("Please set a default Company in your user defaults"))
 	return company

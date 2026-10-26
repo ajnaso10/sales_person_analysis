@@ -1,6 +1,8 @@
 # Copyright (c) 2026, Savad Ibrahim and Contributors
 # License: MIT
 
+from unittest.mock import patch
+
 from frappe.tests import UnitTestCase
 from frappe.utils import flt
 
@@ -99,9 +101,49 @@ class TestApiHelpers(UnitTestCase):
 		self.assertIn("transaction_date", joined)
 		self.assertNotIn("DAYOFWEEK", joined)
 
-	def test_get_years_falls_back_to_current(self):
-		from unittest.mock import patch
+	def test_get_company_prefers_user_default(self):
+		with (
+			patch(
+				"sales_person_analysis.api.analysis.frappe.defaults.get_user_default",
+				return_value="User Co",
+			) as get_default,
+			patch(
+				"sales_person_analysis.api.analysis.frappe.db.get_single_value",
+			) as get_single,
+		):
+			self.assertEqual(analysis_mod._get_company(), "User Co")
+		get_default.assert_called_once_with("Company")
+		get_single.assert_not_called()
 
+	def test_get_company_falls_back_to_global_defaults(self):
+		with (
+			patch(
+				"sales_person_analysis.api.analysis.frappe.defaults.get_user_default",
+				return_value=None,
+			),
+			patch(
+				"sales_person_analysis.api.analysis.frappe.db.get_single_value",
+				return_value="Global Co",
+			) as get_single,
+		):
+			self.assertEqual(analysis_mod._get_company(), "Global Co")
+		get_single.assert_called_once_with("Global Defaults", "default_company")
+
+	def test_get_company_throws_when_unset(self):
+		with (
+			patch(
+				"sales_person_analysis.api.analysis.frappe.defaults.get_user_default",
+				return_value="",
+			),
+			patch(
+				"sales_person_analysis.api.analysis.frappe.db.get_single_value",
+				return_value=None,
+			),
+		):
+			with self.assertRaises(Exception):
+				analysis_mod._get_company()
+
+	def test_get_years_falls_back_to_current(self):
 		from frappe.utils import getdate
 
 		with patch("sales_person_analysis.api.analysis.frappe.db.sql", return_value=[]):
