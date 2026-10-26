@@ -93,7 +93,7 @@ class SalesPersonWiseAnalysis {
 				<div class="spa-table-footer">
 					<div class="spa-pagination"></div>
 					<div class="spa-grand-total">
-						${__("Grand Total")}
+						${__("Grand Total (incl. VAT)")}
 						<span class="spa-amount">0</span>
 					</div>
 				</div>
@@ -559,8 +559,8 @@ class SalesPersonWiseAnalysis {
 		}
 
 		const amount_label = currency
-			? `${__("Sales Amount")} (${frappe.utils.escape_html(currency)})`
-			: __("Sales Amount");
+			? `${__("Sales Amount incl. VAT")} (${frappe.utils.escape_html(currency)})`
+			: __("Sales Amount incl. VAT");
 		const start = (cint(this.data.page) - 1) * cint(this.data.page_size || this.page_size);
 
 		const body = rows
@@ -649,11 +649,14 @@ class SalesPersonWiseAnalysis {
 				{ filters: this.get_filters({ export: 1, page: 1 }) }
 			);
 			const currency = message.currency || this.options.currency || "";
-			const rows = [[__("Customer"), `${__("Sales Amount")} (${currency})`]];
+			const amount_header = currency
+				? `${__("Sales Amount incl. VAT")} (${currency})`
+				: __("Sales Amount incl. VAT");
+			const rows = [[__("Customer"), amount_header]];
 			(message.rows || []).forEach((row) => {
 				rows.push([row.customer_name || row.customer || "", flt(row.amount)]);
 			});
-			rows.push([__("Grand Total"), flt(message.grand_total)]);
+			rows.push([__("Grand Total (incl. VAT)"), flt(message.grand_total)]);
 			frappe.tools.downloadify([], null, rows, "Sales_Person_Wise_Analysis");
 		} catch (err) {
 			console.error(err);
