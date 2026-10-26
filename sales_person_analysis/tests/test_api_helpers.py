@@ -6,7 +6,8 @@ from frappe.utils import flt
 
 from sales_person_analysis.api import analysis as analysis_mod
 from sales_person_analysis.api.analysis import DOCTYPE_META
-from sales_person_analysis.constants import MAX_EXPORT_ROWS
+from sales_person_analysis.api.period import week_of_month_sql
+from sales_person_analysis.constants import MAX_EXPORT_ROWS, WEEK_START_DAYOFWEEK
 
 
 class TestApiHelpers(UnitTestCase):
@@ -73,10 +74,14 @@ class TestApiHelpers(UnitTestCase):
 			sales_persons=["SP1"],
 		)
 		joined = " ".join(conditions)
+		week_sql = week_of_month_sql("doc.`posting_date`")
 		self.assertIn("docstatus = 1", joined)
 		self.assertIn("is_return", joined)
 		self.assertIn("MONTH", joined)
-		self.assertIn("FLOOR", joined)
+		self.assertIn(week_sql, joined)
+		self.assertIn("DAYOFWEEK", joined)
+		self.assertIn(f"- {WEEK_START_DAYOFWEEK} + 7", week_sql)
+		self.assertNotIn("(DAY(doc.`posting_date`) - 1) / 7", joined)
 		self.assertIn("EXISTS", joined)
 		self.assertEqual(values["company"], "Co")
 		self.assertEqual(values["year"], 2026)
@@ -92,6 +97,7 @@ class TestApiHelpers(UnitTestCase):
 		joined = " ".join(conditions)
 		self.assertNotIn("is_return", joined)
 		self.assertIn("transaction_date", joined)
+		self.assertNotIn("DAYOFWEEK", joined)
 
 	def test_get_years_falls_back_to_current(self):
 		from unittest.mock import patch

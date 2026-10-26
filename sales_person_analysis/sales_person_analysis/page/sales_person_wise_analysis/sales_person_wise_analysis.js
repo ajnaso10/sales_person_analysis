@@ -40,7 +40,14 @@ class SalesPersonWiseAnalysis {
 			item_groups: [],
 			years: [this.state.year],
 			currency: "",
-			period: { halves: ["All", "H1", "H2"], quarters: ["All", "Q1", "Q2", "Q3", "Q4"], months: [], weeks: [1, 2, 3, 4, 5] },
+			period: {
+				halves: ["All", "H1", "H2"],
+				quarters: ["All", "Q1", "Q2", "Q3", "Q4"],
+				months: [],
+				weeks: [1, 2, 3, 4, 5, 6],
+				week_start: 1,
+				week_labels: {},
+			},
 		};
 
 		this.data = {
@@ -129,6 +136,16 @@ class SalesPersonWiseAnalysis {
 			const $el = $(e.currentTarget);
 			if ($el.hasClass("spa-year-select")) {
 				this.state.year = $el.val();
+				this.state.page = 1;
+				this.refresh_period_options()
+					.catch(() => {
+						this.options.period.week_labels = {};
+					})
+					.finally(() => {
+						this.render_weeks();
+						this.schedule_refresh();
+					});
+				return;
 			} else if ($el.hasClass("spa-half-select")) {
 				this.state.half = $el.val();
 				this.state.quarter = "All";
@@ -149,8 +166,6 @@ class SalesPersonWiseAnalysis {
 				});
 				return;
 			}
-			this.state.page = 1;
-			this.schedule_refresh();
 		});
 
 		this.$root.on("click", "[data-month]", (e) => {
@@ -162,6 +177,7 @@ class SalesPersonWiseAnalysis {
 			}
 			this.state.page = 1;
 			this.render_months();
+			this.render_weeks();
 			this.schedule_refresh();
 		});
 
@@ -254,6 +270,7 @@ class SalesPersonWiseAnalysis {
 		const message = await frappe.xcall("sales_person_analysis.api.analysis.get_period_options", {
 			half: this.state.half,
 			quarter: this.state.quarter,
+			year: cint(this.state.year),
 		});
 		this.options.period = message;
 		const allowed_months = message.months || [];
@@ -377,7 +394,7 @@ class SalesPersonWiseAnalysis {
 	}
 
 	render_weeks() {
-		let weeks = (this.options.period.weeks || [1, 2, 3, 4, 5]).map(String);
+		let weeks = (this.options.period.weeks || [1, 2, 3, 4, 5, 6]).map(String);
 		const all_selected = !this.state.weeks.length;
 		const hidden = !this.state.expand_weeks ? Math.max(0, weeks.length - 4) : 0;
 		if (hidden) {
@@ -390,9 +407,10 @@ class SalesPersonWiseAnalysis {
 		html += weeks
 			.map((w) => {
 				const selected = this.state.weeks.includes(w);
+				const label = frappe.utils.escape_html(this.week_chip_label(w));
 				return `<button type="button" class="spa-chip ${
 					selected ? "is-selected-soft" : ""
-				}" data-week="${w}" aria-pressed="${selected}">${w}</button>`;
+				}" data-week="${w}" aria-pressed="${selected}" title="${label}">${label}</button>`;
 			})
 			.join("");
 		if (hidden) {
@@ -401,6 +419,19 @@ class SalesPersonWiseAnalysis {
 			html += `<button type="button" class="spa-chip spa-more" data-expand-weeks>${__("Show less")}</button>`;
 		}
 		this.$root.find(".spa-week-row").html(html);
+	}
+
+	week_chip_label(week) {
+		// Date spans come from period.week_labels (week_of_month on the server).
+		// Shown only when a single month is selected; otherwise the chip stays a number.
+		if (this.state.months.length !== 1) {
+			return String(week);
+		}
+		const labels = (this.options.period.week_labels || {})[this.state.months[0]];
+		if (!labels) {
+			return String(week);
+		}
+		return labels[String(week)] || `${__("Week")} ${week}`;
 	}
 
 	render_item_groups() {
