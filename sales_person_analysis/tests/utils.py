@@ -244,6 +244,65 @@ def make_si(
 	return si
 
 
+def make_return_against(
+	source_name: str,
+	*,
+	posting_date: str,
+	qty_by_item: dict | None = None,
+	sales_persons: list[str] | None = None,
+	submit: bool = True,
+):
+	"""Credit note against a submitted Sales Invoice.
+
+	ERPNext's Return action builds negative qty, then calculate_taxes_and_totals
+	stores negative base_grand_total, base_net_amount, and item-wise tax.
+	`qty_by_item` is item_code to a positive quantity; omitted items are left
+	off the credit note. Pass `sales_persons` because that Return action does
+	not copy Sales Team.
+	"""
+	from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_return
+
+	credit = make_sales_return(source_name)
+	credit.set_posting_time = 1
+	credit.posting_date = posting_date
+	credit.due_date = posting_date
+	credit.ignore_pricing_rule = 1
+	credit.payment_terms_template = None
+	credit.payment_schedule = []
+
+	if qty_by_item is not None:
+		wanted = {item_code: abs(flt(qty)) for item_code, qty in qty_by_item.items() if flt(qty)}
+		for row in list(credit.items):
+			qty = wanted.pop(row.item_code, None)
+			if qty is None:
+				credit.remove(row)
+				continue
+			row.qty = -qty
+			row.stock_qty = flt(row.qty) * flt(row.conversion_factor or 1)
+		if wanted:
+			missing = ", ".join(sorted(wanted))
+			frappe.throw(f"No item {missing} on Sales Invoice {source_name} to return.")
+		if not credit.items:
+			frappe.throw(f"Sales Invoice {source_name} has no items left to return.")
+
+	if sales_persons is not None:
+		credit.sales_team = []
+		if sales_persons:
+			pct = flt(100 / len(sales_persons))
+			for sp in sales_persons:
+				credit.append("sales_team", {"sales_person": sp, "allocated_percentage": pct})
+
+	credit.flags.ignore_permissions = True
+	credit.run_method("calculate_taxes_and_totals")
+	credit.insert(ignore_permissions=True)
+	if submit:
+		credit.submit()
+	if sales_persons:
+		set_sales_team(credit.name, sales_persons)
+		credit.reload()
+	return credit
+
+
 def make_so(
 	*,
 	company_name: str,
