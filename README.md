@@ -13,6 +13,22 @@ bench build --app sales_person_analysis
 
 Open from the Awesome Bar: `Sales Person Wise Analysis`, or via Selling / Sales workspace.
 
+After pulling this app, run `bench migrate` once. Migrate creates **Sales Person Analysis Settings** and fills it only when it has never been saved (`defaults_applied`). Later edits are left as they are.
+
+## Role access
+
+Who can see sales is the user's role, configured in **Sales Person Analysis Settings** (System Manager). It is not the user's place in the Sales Person tree. The tree is used only to expand a Team role.
+
+| Scope | Default role | What they see |
+| --- | --- | --- |
+| Own Only | Sales User | The Sales Person linked to their active Employee, and nobody under that node |
+| Team | Sales Manager | That Sales Person plus every descendant |
+| See All | System Manager | Every Sales Person |
+
+If a user has more than one of these roles, the broadest scope wins: See All, then Team, then Own Only. **Administrator** always sees everything, even when See All is empty. A role that is not in any list can open the page only to be denied. Accounts User and Accounts Manager are on the page and are not in the default lists, so add them (usually to See All) if they should use it.
+
+Link the user on an active Employee (`user_id`) and that Employee on an enabled Sales Person. Own Only and Team with no such link are denied. A user cannot request a Sales Person outside their scope, including by export or by editing the request.
+
 ## Weeks
 
 Week filters are Sunday-Saturday calendar weeks inside the month (not fixed blocks of days 1-7, 8-14, ...). Week 1 contains the 1st and ends on Saturday. A month can span six weeks, so weeks 1-6 are available. With one month selected, a chip shows that week's dates, for example `Week 1 (1-3 Oct)` in October 2026. The week start is `WEEK_START_DAYOFWEEK` in `sales_person_analysis/constants.py` (MariaDB `DAYOFWEEK`: 1 = Sunday). Set it to 2 for Monday-start weeks.
