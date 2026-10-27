@@ -28,6 +28,14 @@ SCOPE_USER = "_spa.scope@example.com"
 SEEALL_USER = "_spa.seeall@example.com"
 UNMAPPED_USER = "_spa.unmapped@example.com"
 NOLINK_USER = "_spa.nolink@example.com"
+# Baseline roles. Every test sets the roles it needs; setUp puts these back
+# so a Has Role write cannot leak through the roles cache after rollback.
+FIXTURE_ROLES = {
+	SCOPE_USER: ("Sales User",),
+	SEEALL_USER: ("System Manager",),
+	UNMAPPED_USER: ("Accounts User",),
+	NOLINK_USER: ("Sales User",),
+}
 PARENT_SP = "_SPA Scope Parent"
 CHILD_SP = "_SPA Scope Child"
 OUTSIDE_SP = "_SPA Scope Outside"
@@ -102,6 +110,16 @@ class TestSalesPersonScope(IntegrationTestCase):
 			frappe.db.commit()
 		super().tearDownClass()
 
+	def setUp(self):
+		super().setUp()
+		if self.ready:
+			self._restore_fixture_roles()
+
+	def _restore_fixture_roles(self):
+		for user, roles in FIXTURE_ROLES.items():
+			if frappe.db.exists("User", user):
+				_set_roles(user, roles)
+
 	@classmethod
 	def _fixtures_possible(cls):
 		if not cls.company:
@@ -122,10 +140,8 @@ class TestSalesPersonScope(IntegrationTestCase):
 			if frappe.db.exists("Sales Person", name):
 				frappe.delete_doc("Sales Person", name, force=True, ignore_permissions=True)
 
-		cls._ensure_user(SCOPE_USER, ["Sales User"])
-		cls._ensure_user(SEEALL_USER, ["System Manager"])
-		cls._ensure_user(UNMAPPED_USER, ["Accounts User"])
-		cls._ensure_user(NOLINK_USER, ["Sales User"])
+		for email, roles in FIXTURE_ROLES.items():
+			cls._ensure_user(email, roles)
 		for user in (SCOPE_USER, SEEALL_USER, UNMAPPED_USER, NOLINK_USER):
 			frappe.defaults.set_user_default("company", cls.company, user)
 
@@ -273,18 +289,19 @@ class TestSalesPersonScope(IntegrationTestCase):
 		return flt(tu.amount_for_customer(result, self.customer))
 
 	@contextmanager
-	def _as(self, user, roles=None):
-		if roles is not None:
-			_set_roles(user, roles)
+	def _as(self, user, roles):
+		"""Run as `user` with exactly these roles, then restore the fixture roles."""
+		_set_roles(user, roles)
 		frappe.set_user(user)
 		try:
 			yield
 		finally:
 			frappe.set_user("Administrator")
+			_set_roles(user, FIXTURE_ROLES[user])
 
 	def test_own_only_excludes_descendants_and_outsiders(self):
 		self._need_data()
-		with self._as(self.scope_user):
+		with self._as(self.scope_user, ["Sales User"]):
 			self.assertAlmostEqual(self._amount(), self.own_total, places=2)
 			self.assertAlmostEqual(self._amount(sales_persons=[self.parent_sp]), self.own_total, places=2)
 			options = get_filter_options("Sales Invoice")
@@ -294,7 +311,7 @@ class TestSalesPersonScope(IntegrationTestCase):
 
 	def test_own_only_rejects_descendant_and_outsider(self):
 		self._need_data()
-		with self._as(self.scope_user):
+		with self._as(self.scope_user, ["Sales User"]):
 			for blocked in (self.child_sp, self.outside_sp):
 				with self.assertRaises(frappe.PermissionError) as raised:
 					self._amount(sales_persons=[blocked])
@@ -302,7 +319,7 @@ class TestSalesPersonScope(IntegrationTestCase):
 
 	def test_own_only_ignores_client_allow_list(self):
 		self._need_data()
-		with self._as(self.scope_user):
+		with self._as(self.scope_user, ["Sales User"]):
 			amount = self._amount(allowed_sales_persons=[self.outside_sp, self.child_sp])
 		self.assertAlmostEqual(amount, self.own_total, places=2)
 
@@ -329,7 +346,7 @@ class TestSalesPersonScope(IntegrationTestCase):
 	def test_see_all_includes_every_fixture_invoice(self):
 		self._need_data()
 		self.assertAlmostEqual(self._amount(), self.all_total, places=2)
-		with self._as(self.seeall_user):
+		with self._as(self.seeall_user, ["System Manager"]):
 			self.assertAlmostEqual(self._amount(), self.all_total, places=2)
 			options = get_filter_options("Sales Invoice")
 		self.assertFalse(options["restriction"]["restricted"])
@@ -343,7 +360,7 @@ class TestSalesPersonScope(IntegrationTestCase):
 
 	def test_unmapped_role_is_denied(self):
 		self._need_data()
-		with self._as(self.unmapped_user):
+		with self._as(self.unmapped_user, ["Accounts User"]):
 			with self.assertRaises(frappe.PermissionError) as raised:
 				self._amount()
 			with self.assertRaises(frappe.PermissionError):
@@ -359,7 +376,7 @@ class TestSalesPersonScope(IntegrationTestCase):
 
 	def test_export_uses_the_same_scope(self):
 		self._need_data()
-		with self._as(self.scope_user):
+		with self._as(self.scope_user, ["Sales User"]):
 			result = get_customer_wise_sales(self._filters(export=1))
 		self.assertAlmostEqual(flt(tu.amount_for_customer(result, self.customer)), self.own_total, places=2)
 		self.assertAlmostEqual(flt(result["grand_total"]), self.own_total, places=2)
@@ -399,6 +416,10 @@ def _set_roles(user, roles):
 	for role in sorted(set(roles) | keep):
 		doc.append("roles", {"role": role})
 	doc.save(ignore_permissions=True)
+	# Has Role is cached. The per-test rollback restores the rows and leaves
+	# this cache behind, so drop it whenever the roles change.
+	frappe.cache.hdel("roles", user)
+	frappe.clear_cache(user=user)
 
 
 def _snapshot_settings(doc):
