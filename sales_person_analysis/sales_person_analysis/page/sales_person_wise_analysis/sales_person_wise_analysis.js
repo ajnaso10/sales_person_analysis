@@ -35,6 +35,8 @@ class SalesPersonWiseAnalysis {
 			item_group_search: "",
 		};
 
+		this.restriction = { restricted: false, read_only: false, scope: "see_all" };
+
 		this.options = {
 			sales_persons: [],
 			item_groups: [],
@@ -61,7 +63,9 @@ class SalesPersonWiseAnalysis {
 		this.make_actions();
 		this.$root = $('<div class="spa-page"></div>').appendTo(page.main);
 		this.render_shell();
-		this.load_filter_options().then(() => this.refresh());
+		this.load_filter_options().then((loaded) => {
+			if (loaded !== false) this.refresh();
+		});
 	}
 
 	make_actions() {
@@ -116,6 +120,7 @@ class SalesPersonWiseAnalysis {
 		});
 
 		this.$root.on("click", "[data-sales-person]", (e) => {
+			if (this.restriction && this.restriction.read_only) return;
 			const name = String($(e.currentTarget).data("sales-person"));
 			if (name === "__all__") {
 				this.state.sales_persons = [];
@@ -244,6 +249,14 @@ class SalesPersonWiseAnalysis {
 				{ doctype: this.state.doctype }
 			);
 			this.options.sales_persons = message.sales_persons || [];
+			this.restriction = message.restriction || {
+				restricted: false,
+				read_only: false,
+				scope: "see_all",
+			};
+			if (this.restriction.read_only) {
+				this.state.sales_persons = this.options.sales_persons.slice();
+			}
 			this.options.item_groups = message.item_groups || [];
 			this.options.years = (message.years || []).map(String);
 			this.options.currency = message.currency || "";
@@ -260,9 +273,15 @@ class SalesPersonWiseAnalysis {
 			);
 			await this.refresh_period_options();
 			this.render_filters();
+			return true;
 		} catch (err) {
 			console.error(err);
-			frappe.show_alert({ message: __("Failed to load filter options"), indicator: "red" });
+			const text = server_message(err, __("Failed to load filter options"));
+			frappe.show_alert({ message: text, indicator: "red" });
+			this.$root.find(".spa-table-body").html(
+				`<div class="spa-error">${frappe.utils.escape_html(text)}</div>`
+			);
+			return false;
 		}
 	}
 
@@ -302,6 +321,7 @@ class SalesPersonWiseAnalysis {
 	}
 
 	render_sales_persons() {
+		const read_only = !!(this.restriction && this.restriction.read_only);
 		const all_selected = !this.state.sales_persons.length;
 		let names = this.options.sales_persons.slice();
 		const hidden = !this.state.expand_sales_persons
@@ -311,13 +331,16 @@ class SalesPersonWiseAnalysis {
 			names = names.slice(0, this.visible_chip_count);
 		}
 
-		let html = `<button type="button" class="spa-chip ${
-			all_selected ? "is-selected" : ""
-		}" data-sales-person="__all__" aria-pressed="${all_selected}">${__("All Sales Persons")}</button>`;
+		let html = "";
+		if (!read_only) {
+			html += `<button type="button" class="spa-chip ${
+				all_selected ? "is-selected" : ""
+			}" data-sales-person="__all__" aria-pressed="${all_selected}">${__("All Sales Persons")}</button>`;
+		}
 
 		html += names
 			.map((name) => {
-				const selected = this.state.sales_persons.includes(name);
+				const selected = read_only || this.state.sales_persons.includes(name);
 				return `<button type="button" class="spa-chip ${
 					selected ? "is-selected-soft" : ""
 				}" data-sales-person="${frappe.utils.escape_html(name)}" aria-pressed="${selected}">${frappe.utils.escape_html(
@@ -522,8 +545,9 @@ class SalesPersonWiseAnalysis {
 		} catch (err) {
 			if (request_id !== this.request_id) return;
 			console.error(err);
+			const text = server_message(err, __("Could not load sales data. Please try again."));
 			this.$root.find(".spa-table-body").html(
-				`<div class="spa-error">${__("Could not load sales data. Please try again.")}</div>`
+				`<div class="spa-error">${frappe.utils.escape_html(text)}</div>`
 			);
 		} finally {
 			if (request_id === this.request_id) {
@@ -637,8 +661,8 @@ class SalesPersonWiseAnalysis {
 			expand_item_groups: false,
 			item_group_search: "",
 		};
-		await this.load_filter_options();
-		this.refresh();
+		const loaded = await this.load_filter_options();
+		if (loaded !== false) this.refresh();
 	}
 
 	async export_csv() {
@@ -660,9 +684,19 @@ class SalesPersonWiseAnalysis {
 			frappe.tools.downloadify([], null, rows, "Sales_Person_Wise_Analysis");
 		} catch (err) {
 			console.error(err);
-			frappe.show_alert({ message: __("Export failed"), indicator: "red" });
+			frappe.show_alert({
+				message: server_message(err, __("Export failed")),
+				indicator: "red",
+			});
 		} finally {
 			frappe.dom.unfreeze();
 		}
 	}
+}
+
+function server_message(err, fallback) {
+	if (!err) return fallback;
+	if (typeof err === "string" && err.trim()) return err;
+	if (err.message && String(err.message).trim()) return String(err.message);
+	return fallback;
 }

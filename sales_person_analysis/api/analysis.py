@@ -3,6 +3,9 @@
 
 """Customer-wise sales APIs for Sales Person Wise Analysis.
 
+Who can see rows is decided by Sales Person Analysis Settings (role scope),
+not by where a Sales Person sits in the tree. See api.scope.
+
 Amount rules
 ------------
 - Amounts are VAT-inclusive and in company currency (base_*).
@@ -33,6 +36,11 @@ from sales_person_analysis.api.period import (
 	resolve_months,
 	week_of_month_sql,
 )
+from sales_person_analysis.api.scope import (
+	enforce_sales_person_filter,
+	public_restriction,
+	restriction_context,
+)
 from sales_person_analysis.constants import (
 	ALLOWED_DOCTYPES,
 	DEFAULT_PAGE_SIZE,
@@ -60,16 +68,23 @@ DOCTYPE_META = {
 def get_filter_options(doctype: str = "Sales Invoice"):
 	"""Return sales persons, item groups, years, and period hierarchy options."""
 	doctype = _validate_doctype(doctype)
-	frappe.has_permission(doctype, "read", throw=True)
+	ctx = _scope_or_throw()
 	company = _get_company()
+	if ctx["restricted"]:
+		sales_persons = list(ctx["allowed_sales_persons"])
+		year_sales_persons = sales_persons
+	else:
+		sales_persons = _get_sales_persons()
+		year_sales_persons = None
 
 	return {
 		"company": company,
 		"currency": frappe.get_cached_value("Company", company, "default_currency") or "",
-		"sales_persons": _get_sales_persons(),
+		"sales_persons": sales_persons,
 		"item_groups": _get_item_groups(),
-		"years": _get_years(doctype, company),
+		"years": _get_years(doctype, company, year_sales_persons),
 		"period": hierarchy_options(year=getdate().year),
+		"restriction": public_restriction(ctx),
 	}
 
 
@@ -83,9 +98,9 @@ def get_period_options(half=None, quarter=None, year=None):
 def get_customer_wise_sales(filters=None):
 	"""Paginated customer-wise sales for the selected document type and filters."""
 	filters = frappe._dict(frappe.parse_json(filters) if isinstance(filters, str) else (filters or {}))
+	# Ignore a client-supplied allow-list. Export uses this same method.
+	filters.pop("allowed_sales_persons", None)
 	doctype = _validate_doctype(filters.get("doctype") or "Sales Invoice")
-	frappe.has_permission(doctype, "read", throw=True)
-	company = _get_company()
 
 	page = max(cint(filters.get("page") or 1), 1)
 	page_size = cint(filters.get("page_size") or DEFAULT_PAGE_SIZE)
@@ -96,12 +111,16 @@ def get_customer_wise_sales(filters=None):
 	if not year:
 		frappe.throw(_("Year is required"))
 
+	# Apply the role scope before the empty-period shortcut, so a user with
+	# no mapped role cannot hide behind an empty filter combination.
+	sales_persons = enforce_sales_person_filter(_parse_names(filters.get("sales_persons")))
+	company = _get_company()
+
 	month_nums = resolve_months(filters.get("half"), filters.get("quarter"), filters.get("months"))
 	if month_nums is not None and not month_nums:
 		return _empty_result(company, doctype, page, page_size)
 
 	weeks = parse_week_list(filters.get("weeks"))
-	sales_persons = _parse_names(filters.get("sales_persons"))
 	item_groups = _parse_names(filters.get("item_groups"))
 
 	meta = DOCTYPE_META[doctype]
@@ -162,8 +181,17 @@ def _get_company() -> str:
 	return company
 
 
+def _scope_or_throw():
+	ctx = restriction_context()
+	if ctx["error"]:
+		frappe.throw(ctx["error"], frappe.PermissionError)
+	return ctx
+
+
 def _get_sales_persons() -> list[str]:
-	rows = frappe.get_all(
+	# db.get_all skips DocPerm. See All includes System Manager, who has no
+	# Sales Person permission row in stock ERPNext.
+	rows = frappe.db.get_all(
 		"Sales Person",
 		filters={"enabled": 1},
 		fields=["name"],
@@ -183,17 +211,34 @@ def _get_item_groups() -> list[str]:
 	return [r.name for r in rows]
 
 
-def _get_years(doctype: str, company: str) -> list[int]:
+def _get_years(doctype: str, company: str, sales_persons: list[str] | None = None) -> list[int]:
 	date_field = DOCTYPE_META[doctype]["date_field"]
 	current_year = getdate().year
+	conditions = [
+		"docstatus = 1",
+		"company = %s",
+		f"`{date_field}` IS NOT NULL",
+	]
+	values: list = [company]
+	if sales_persons is not None:
+		# Restricted users only see years that contain their own documents.
+		conditions.append(
+			f"""EXISTS (
+				SELECT 1 FROM `tabSales Team` st
+				WHERE st.parent = `tab{doctype}`.name
+					AND st.parenttype = %s
+					AND st.sales_person IN %s
+			)"""
+		)
+		values.extend([doctype, tuple(sales_persons) or ("",)])
 	rows = frappe.db.sql(
 		f"""
 		SELECT DISTINCT YEAR(`{date_field}`) AS y
 		FROM `tab{doctype}`
-		WHERE docstatus = 1 AND company = %s AND `{date_field}` IS NOT NULL
+		WHERE {" AND ".join(conditions)}
 		ORDER BY y DESC
 		""",
-		(company,),
+		tuple(values),
 	)
 	years = [cint(r[0]) for r in rows if r and r[0]]
 	if current_year not in years:

@@ -55,13 +55,22 @@ class TestAnalysisPermissions(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				get_filter_options("Sales Invoice")
 
-	def test_read_permission_enforced(self):
-		with patch("sales_person_analysis.api.analysis.frappe.has_permission") as mocked:
-			mocked.side_effect = frappe.PermissionError
-			with self.assertRaises(frappe.PermissionError):
-				get_filter_options("Sales Invoice")
-			with self.assertRaises(frappe.PermissionError):
-				get_customer_wise_sales({"doctype": "Sales Invoice", "year": getdate().year})
+	def test_sales_invoice_read_is_not_the_gate(self):
+		# Sales User and System Manager often have no Sales Invoice read.
+		# Access is the role scope. Administrator is See All, so a patched
+		# has_permission must not block the page.
+		with patch(
+			"sales_person_analysis.api.analysis.frappe.has_permission",
+			side_effect=frappe.PermissionError,
+		):
+			if not self.company:
+				self.skipTest("No company configured")
+			options = get_filter_options("Sales Invoice")
+			self.assertIn("sales_persons", options)
+			result = get_customer_wise_sales(
+				{"doctype": "Sales Invoice", "year": getdate().year, "page": 1, "page_size": 1}
+			)
+			self.assertEqual(result["doctype"], "Sales Invoice")
 
 	def test_guest_cannot_call_without_permission(self):
 		# Whitelisted methods still check has_permission; Guest lacks SI read.

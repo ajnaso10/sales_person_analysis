@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import frappe
 from frappe.modules.import_file import import_file_by_path
+from frappe.utils import cint
 
 from sales_person_analysis.constants import (
 	AFTER_LINKS,
@@ -16,15 +17,46 @@ from sales_person_analysis.constants import (
 	WORKSPACE_NAMES,
 )
 
+# Seed values for a new site. Runtime scope is the Sales Person Analysis Settings
+# single, which a System Manager can edit without a code change. These tuples
+# are not read when the page runs.
+DEFAULT_ROLE_ROWS = (
+	("own_only_roles", "Sales User"),
+	("team_roles", "Sales Manager"),
+	("see_all_roles", "System Manager"),
+)
+SETTINGS_DOCTYPE = "Sales Person Analysis Settings"
+
 
 def after_install():
 	sync_page()
 	sync_navigation()
+	ensure_sales_person_analysis_settings()
 
 
 def after_migrate():
 	sync_page()
 	sync_navigation()
+	ensure_sales_person_analysis_settings()
+
+
+def ensure_sales_person_analysis_settings():
+	"""Create default role rows once. Later edits in the Single are left alone."""
+	if not frappe.db.exists("DocType", SETTINGS_DOCTYPE):
+		return
+	if cint(frappe.db.get_single_value(SETTINGS_DOCTYPE, "defaults_applied")):
+		return
+
+	doc = frappe.get_doc(SETTINGS_DOCTYPE)
+	for fieldname, role in DEFAULT_ROLE_ROWS:
+		if doc.get(fieldname):
+			continue
+		if frappe.db.exists("Role", role):
+			doc.append(fieldname, {"role": role})
+
+	doc.defaults_applied = 1
+	doc.flags.ignore_permissions = True
+	doc.save(ignore_permissions=True)
 
 
 def sync_page():
