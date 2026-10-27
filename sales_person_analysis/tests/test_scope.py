@@ -179,6 +179,8 @@ class TestSalesPersonScope(IntegrationTestCase):
 			sales_persons=[OUTSIDE_SP],
 		)
 		cls.invoice_names = [parent_si.name, child_si.name, outside_si.name]
+		cls.parent_invoice = parent_si.name
+		cls.outside_invoice = outside_si.name
 		cls.own_total = flt(parent_si.base_grand_total)
 		cls.child_total = flt(child_si.base_grand_total)
 		cls.outside_total = flt(outside_si.base_grand_total)
@@ -373,6 +375,31 @@ class TestSalesPersonScope(IntegrationTestCase):
 			with self.assertRaises(frappe.PermissionError) as raised:
 				self._amount()
 		self.assertIn("Employee", str(raised.exception))
+
+	def test_return_outside_scope_is_not_visible(self):
+		self._need_data()
+		posting_date = today()
+		outside_credit = tu.make_return_against(
+			self.outside_invoice,
+			posting_date=posting_date,
+			sales_persons=[self.outside_sp],
+		)
+		self.addCleanup(lambda: tu.cancel_and_delete("Sales Invoice", outside_credit.name))
+		self.assertLess(flt(outside_credit.base_grand_total), 0)
+		with self._as(self.scope_user, ["Sales User"]):
+			self.assertAlmostEqual(self._amount(), self.own_total, places=2)
+
+		own_credit = tu.make_return_against(
+			self.parent_invoice,
+			posting_date=posting_date,
+			sales_persons=[self.parent_sp],
+		)
+		self.addCleanup(lambda: tu.cancel_and_delete("Sales Invoice", own_credit.name))
+		self.assertLess(flt(own_credit.base_grand_total), 0)
+		with self._as(self.scope_user, ["Sales User"]):
+			self.assertAlmostEqual(
+				self._amount(), self.own_total + flt(own_credit.base_grand_total), places=2
+			)
 
 	def test_export_uses_the_same_scope(self):
 		self._need_data()

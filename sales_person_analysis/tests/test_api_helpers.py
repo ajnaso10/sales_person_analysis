@@ -64,7 +64,7 @@ class TestApiHelpers(UnitTestCase):
 		self.assertEqual(rows[1]["customer_name"], "C2")
 		self.assertEqual(flt(rows[1]["amount"]), 0.0)
 
-	def test_base_conditions_include_return_and_filters(self):
+	def test_base_conditions_include_submitted_returns(self):
 		meta = DOCTYPE_META["Sales Invoice"]
 		conditions, values = analysis_mod._base_conditions(
 			"Sales Invoice",
@@ -78,7 +78,8 @@ class TestApiHelpers(UnitTestCase):
 		joined = " ".join(conditions)
 		week_sql = week_of_month_sql("doc.`posting_date`")
 		self.assertIn("docstatus = 1", joined)
-		self.assertIn("is_return", joined)
+		# Credit notes stay in the query. Their stored amounts are negative.
+		self.assertNotIn("is_return", joined)
 		self.assertIn("MONTH", joined)
 		self.assertIn(week_sql, joined)
 		self.assertIn("DAYOFWEEK", joined)
@@ -169,6 +170,28 @@ class TestApiHelpers(UnitTestCase):
 		self.assertAlmostEqual(taxed, 103.5)
 		self.assertAlmostEqual(zero_rated, 180)
 		self.assertAlmostEqual(taxed + zero_rated, 283.5)
+
+	def test_inclusive_line_amount_keeps_credit_note_sign(self):
+		# A full credit note is the positive case with every input negated.
+		# Negative times negative over negative stays negative.
+		taxed = analysis_mod.inclusive_line_amount(-100, -15, -300, -15, -315)
+		zero_rated = analysis_mod.inclusive_line_amount(-200, 0, -300, -15, -315)
+		self.assertAlmostEqual(taxed, -115)
+		self.assertAlmostEqual(zero_rated, -200)
+		self.assertAlmostEqual(taxed + zero_rated, -315)
+
+		discounted = analysis_mod.inclusive_line_amount(-100, -15, -300, -15, -283.5)
+		discounted_zero = analysis_mod.inclusive_line_amount(-200, 0, -300, -15, -283.5)
+		self.assertAlmostEqual(discounted, -103.5)
+		self.assertAlmostEqual(discounted_zero, -180)
+		self.assertAlmostEqual(discounted + discounted_zero, -283.5)
+
+	def test_return_amounts_are_not_negated_in_sql(self):
+		sql = analysis_mod._parent_amount_sql() + analysis_mod._item_inclusive_amount_sql()
+		self.assertIn("doc.base_grand_total", sql)
+		self.assertNotIn("ABS(doc.base_grand_total)", sql)
+		self.assertNotIn("-1 *", sql)
+		self.assertNotIn("- doc.base_grand_total", sql)
 
 	def test_inclusive_line_amount_no_tax_and_zero_base(self):
 		self.assertAlmostEqual(analysis_mod.inclusive_line_amount(200, 0, 200, 0, 200), 200)

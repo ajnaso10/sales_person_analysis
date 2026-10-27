@@ -22,6 +22,14 @@ Amount rules
 - Salesperson filter uses EXISTS on Sales Team so multi-person documents are
   counted once. Amounts are not weighted by allocated_percentage.
 - SI and SO amounts are never combined in one result set.
+- Submitted credit notes (Sales Invoice, is_return = 1, docstatus = 1) are
+  included. ERPNext already stores their base_grand_total, base_net_amount,
+  and item-wise tax as negative numbers, so the SUM subtracts the return.
+  Do not negate those amounts again. Week and month use the credit note's
+  own posting_date. Drafts and cancelled credit notes stay out via
+  docstatus = 1. The sales person is the one on the credit note's Sales Team.
+- Sales Order has no return document. A credit note does not change a
+  submitted order's base_grand_total, so Sales Order mode is order totals only.
 """
 
 from __future__ import annotations
@@ -54,6 +62,8 @@ DOCTYPE_META = {
 	"Sales Invoice": {
 		"date_field": "posting_date",
 		"item_doctype": "Sales Invoice Item",
+		# Credit notes use this field. Submitted ones are included; the amounts
+		# are already negative. Sales Order has no return document.
 		"has_is_return": True,
 	},
 	"Sales Order": {
@@ -265,8 +275,11 @@ def _base_conditions(doctype, company, meta, year, month_nums, weeks, sales_pers
 	]
 	values = {"company": company, "year": year, "parenttype": doctype}
 
-	if meta["has_is_return"]:
-		conditions.append("IFNULL(doc.is_return, 0) = 0")
+	# Submitted Sales Invoices include credit notes. Their base amounts and
+	# item-wise tax are already negative, so summing them subtracts the return.
+	# Drafts and cancelled credit notes are excluded by docstatus = 1 above.
+	# The date filters use the credit note's own posting date. Sales Order has
+	# no is_return field; a credit note does not reduce the order total.
 
 	if month_nums is not None:
 		conditions.append(f"MONTH(doc.`{date_field}`) IN %(months)s")
@@ -311,6 +324,9 @@ def inclusive_line_amount(
 	The scale picks up cash / non-trade Grand Total discounts and inclusive-tax
 	rounding dust, which change base_grand_total without being written back
 	onto item nets. Net-total discounts are already inside base_net_amount.
+
+	A credit note stores every one of these inputs as a negative number. The
+	ratio stays negative, so the result must not be negated again.
 	"""
 	item_pre = flt(base_net_amount) + flt(item_tax)
 	invoice_pre = flt(base_net_total) + flt(invoice_tax)

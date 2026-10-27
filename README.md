@@ -29,6 +29,14 @@ If a user has more than one of these roles, the broadest scope wins: See All, th
 
 Link the user on an active Employee (`user_id`) and that Employee on an enabled Sales Person. Own Only and Team with no such link are denied. A user cannot request a Sales Person outside their scope, including by export or by editing the request.
 
+## Returns
+
+Sales Invoice mode includes submitted credit notes (`is_return` = 1, docstatus Submitted). A credit note already stores a negative VAT-inclusive total, so it reduces the customer row, the grand total, item-group amounts, and the CSV export. The week and month are the credit note's own posting date. A customer whose only document in that period is a credit note still appears, with a negative amount. Drafts and cancelled credit notes are left out.
+
+The sales person is the one on the credit note's Sales Team, and role scope applies to that person. ERPNext's Return button does not copy Sales Team, so the sales person has to be on the credit note or it will not reduce that person's figures.
+
+Sales Order has no credit note. A return does not change the submitted order total, so Sales Order mode stays the order amounts only.
+
 ## Weeks
 
 Week filters are Sunday-Saturday calendar weeks inside the month (not fixed blocks of days 1-7, 8-14, ...). Week 1 contains the 1st and ends on Saturday. A month can span six weeks, so weeks 1-6 are available. With one month selected, a chip shows that week's dates, for example `Week 1 (1-3 Oct)` in October 2026. The week start is `WEEK_START_DAYOFWEEK` in `sales_person_analysis/constants.py` (MariaDB `DAYOFWEEK`: 1 = Sunday). Set it to 2 for Monday-start weeks.
