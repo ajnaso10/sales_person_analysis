@@ -26,8 +26,13 @@ Amount rules
   included. ERPNext already stores their base_grand_total, base_net_amount,
   and item-wise tax as negative numbers, so the SUM subtracts the return.
   Do not negate those amounts again. Week and month use the credit note's
-  own posting_date. Drafts and cancelled credit notes stay out via
-  docstatus = 1. The sales person is the one on the credit note's Sales Team.
+  own posting_date. Drafts and cancelled credit notes stay out.
+- Payment status filters submitted documents only. Pending means money is
+  still due: a Sales Invoice with outstanding_amount > 0, or a Sales Order
+  whose order total is not covered by advance_paid plus payments on linked
+  submitted invoices. Paid means nothing is left to collect. All is both,
+  and it is the default. A credit note has no amount left to collect, so it
+  is Paid, not Pending. Cancelled documents are never included.
 - Sales Order has no return document. A credit note does not change a
   submitted order's base_grand_total, so Sales Order mode is order totals only.
 """
@@ -52,7 +57,11 @@ from sales_person_analysis.api.scope import (
 from sales_person_analysis.constants import (
 	ALLOWED_DOCTYPES,
 	DEFAULT_PAGE_SIZE,
+	DOCUMENT_STATUSES,
 	MAX_EXPORT_ROWS,
+	STATUS_ALL,
+	STATUS_PAID,
+	STATUS_PENDING,
 )
 
 # Guard for a document whose net and customer tax are both zero.
@@ -75,9 +84,10 @@ DOCTYPE_META = {
 
 
 @frappe.whitelist()
-def get_filter_options(doctype: str = "Sales Invoice"):
+def get_filter_options(doctype: str = "Sales Invoice", status: str | None = None):
 	"""Return sales persons, item groups, years, and period hierarchy options."""
 	doctype = _validate_doctype(doctype)
+	status = _validate_status(status)
 	ctx = _scope_or_throw()
 	company = _get_company()
 	if ctx["restricted"]:
@@ -92,7 +102,8 @@ def get_filter_options(doctype: str = "Sales Invoice"):
 		"currency": frappe.get_cached_value("Company", company, "default_currency") or "",
 		"sales_persons": sales_persons,
 		"item_groups": _get_item_groups(),
-		"years": _get_years(doctype, company, year_sales_persons),
+		"years": _get_years(doctype, company, year_sales_persons, status),
+		"status": status,
 		"period": hierarchy_options(year=getdate().year),
 		"restriction": public_restriction(ctx),
 	}
@@ -111,6 +122,7 @@ def get_customer_wise_sales(filters=None):
 	# Ignore a client-supplied allow-list. Export uses this same method.
 	filters.pop("allowed_sales_persons", None)
 	doctype = _validate_doctype(filters.get("doctype") or "Sales Invoice")
+	status = _validate_status(filters.get("status"))
 
 	page = max(cint(filters.get("page") or 1), 1)
 	page_size = cint(filters.get("page_size") or DEFAULT_PAGE_SIZE)
@@ -128,13 +140,15 @@ def get_customer_wise_sales(filters=None):
 
 	month_nums = resolve_months(filters.get("half"), filters.get("quarter"), filters.get("months"))
 	if month_nums is not None and not month_nums:
-		return _empty_result(company, doctype, page, page_size)
+		return _empty_result(company, doctype, page, page_size, status)
 
 	weeks = parse_week_list(filters.get("weeks"))
 	item_groups = _parse_names(filters.get("item_groups"))
 
 	meta = DOCTYPE_META[doctype]
-	conditions, values = _base_conditions(doctype, company, meta, year, month_nums, weeks, sales_persons)
+	conditions, values = _base_conditions(
+		doctype, company, meta, year, month_nums, weeks, sales_persons, status
+	)
 
 	if item_groups:
 		rows, grand_total, customer_count = _query_with_item_groups(
@@ -150,6 +164,7 @@ def get_customer_wise_sales(filters=None):
 		"company": company,
 		"currency": currency,
 		"doctype": doctype,
+		"status": status,
 		"rows": rows,
 		"grand_total": flt(grand_total),
 		"customer_count": cint(customer_count),
@@ -159,12 +174,13 @@ def get_customer_wise_sales(filters=None):
 	}
 
 
-def _empty_result(company, doctype, page, page_size):
+def _empty_result(company, doctype, page, page_size, status=STATUS_ALL):
 	currency = frappe.get_cached_value("Company", company, "default_currency") or ""
 	return {
 		"company": company,
 		"currency": currency,
 		"doctype": doctype,
+		"status": status,
 		"rows": [],
 		"grand_total": 0.0,
 		"customer_count": 0,
@@ -179,6 +195,53 @@ def _validate_doctype(doctype: str) -> str:
 	if doctype not in ALLOWED_DOCTYPES:
 		frappe.throw(_("Document Type must be Sales Invoice or Sales Order"))
 	return doctype
+
+
+def _validate_status(status: str | None) -> str:
+	status = (status or STATUS_ALL).strip()
+	if status not in DOCUMENT_STATUSES:
+		frappe.throw(_("Status must be Pending, Paid, or All"))
+	return status
+
+
+def _payment_condition(doctype: str, status: str, alias: str = "doc") -> str | None:
+	"""SQL predicate for the payment filter. None means every submitted document."""
+	status = _validate_status(status)
+	if status == STATUS_ALL:
+		return None
+	if doctype == "Sales Invoice":
+		compare = ">" if status == STATUS_PENDING else "<="
+		return f"IFNULL({alias}.outstanding_amount, 0) {compare} 0"
+	due = _sales_order_amount_due_sql(alias)
+	compare = ">" if status == STATUS_PENDING else "<="
+	if status not in (STATUS_PENDING, STATUS_PAID):
+		return None
+	return f"{due} {compare} 0"
+
+
+def _sales_order_amount_due_sql(alias: str = "doc") -> str:
+	"""Order total still to collect, in the order's currency.
+
+	advance_paid is what is still allocated to the order. After an advance
+	moves onto a Sales Invoice, ERPNext drops it from advance_paid and reduces
+	that invoice's outstanding_amount, so the two are added. A linked credit
+	note reduces the collected amount because its grand_total is negative.
+	"""
+	order_total = (
+		f"CASE WHEN IFNULL({alias}.rounded_total, 0) = 0 "
+		f"THEN IFNULL({alias}.grand_total, 0) ELSE {alias}.rounded_total END"
+	)
+	collected = f"""IFNULL({alias}.advance_paid, 0) + IFNULL((
+		SELECT SUM(IFNULL(si.grand_total, 0) - IFNULL(si.outstanding_amount, 0))
+		FROM `tabSales Invoice` si
+		WHERE si.docstatus = 1
+			AND EXISTS (
+				SELECT 1 FROM `tabSales Invoice Item` sii
+				WHERE sii.parent = si.name
+					AND sii.sales_order = {alias}.name
+			)
+	), 0)"""
+	return f"(({order_total}) - ({collected}))"
 
 
 def _get_company() -> str:
@@ -221,21 +284,29 @@ def _get_item_groups() -> list[str]:
 	return [r.name for r in rows]
 
 
-def _get_years(doctype: str, company: str, sales_persons: list[str] | None = None) -> list[int]:
+def _get_years(
+	doctype: str,
+	company: str,
+	sales_persons: list[str] | None = None,
+	status: str = STATUS_ALL,
+) -> list[int]:
 	date_field = DOCTYPE_META[doctype]["date_field"]
 	current_year = getdate().year
 	conditions = [
-		"docstatus = 1",
-		"company = %s",
-		f"`{date_field}` IS NOT NULL",
+		"doc.docstatus = 1",
+		"doc.company = %s",
+		f"doc.`{date_field}` IS NOT NULL",
 	]
 	values: list = [company]
+	payment = _payment_condition(doctype, status)
+	if payment:
+		conditions.append(payment)
 	if sales_persons is not None:
 		# Restricted users only see years that contain their own documents.
 		conditions.append(
-			f"""EXISTS (
+			"""EXISTS (
 				SELECT 1 FROM `tabSales Team` st
-				WHERE st.parent = `tab{doctype}`.name
+				WHERE st.parent = doc.name
 					AND st.parenttype = %s
 					AND st.sales_person IN %s
 			)"""
@@ -243,8 +314,8 @@ def _get_years(doctype: str, company: str, sales_persons: list[str] | None = Non
 		values.extend([doctype, tuple(sales_persons) or ("",)])
 	rows = frappe.db.sql(
 		f"""
-		SELECT DISTINCT YEAR(`{date_field}`) AS y
-		FROM `tab{doctype}`
+		SELECT DISTINCT YEAR(doc.`{date_field}`) AS y
+		FROM `tab{doctype}` doc
 		WHERE {" AND ".join(conditions)}
 		ORDER BY y DESC
 		""",
@@ -266,8 +337,18 @@ def _parse_names(value) -> list[str]:
 	return [str(v).strip() for v in value if v and str(v).strip()]
 
 
-def _base_conditions(doctype, company, meta, year, month_nums, weeks, sales_persons):
+def _base_conditions(
+	doctype,
+	company,
+	meta,
+	year,
+	month_nums,
+	weeks,
+	sales_persons,
+	status=STATUS_ALL,
+):
 	date_field = meta["date_field"]
+	status = _validate_status(status)
 	conditions = [
 		"doc.docstatus = 1",
 		"doc.company = %(company)s",
@@ -275,11 +356,14 @@ def _base_conditions(doctype, company, meta, year, month_nums, weeks, sales_pers
 	]
 	values = {"company": company, "year": year, "parenttype": doctype}
 
-	# Submitted Sales Invoices include credit notes. Their base amounts and
-	# item-wise tax are already negative, so summing them subtracts the return.
-	# Drafts and cancelled credit notes are excluded by docstatus = 1 above.
-	# The date filters use the credit note's own posting date. Sales Order has
-	# no is_return field; a credit note does not reduce the order total.
+	# Submitted documents only. Credit notes stay in: their amounts are already
+	# negative. Pending / Paid splits those submitted documents by what is
+	# still due. All leaves the split off. Cancelled rows are excluded by
+	# docstatus = 1. Dates use the document's own posting or transaction date.
+
+	payment = _payment_condition(doctype, status)
+	if payment:
+		conditions.append(payment)
 
 	if month_nums is not None:
 		conditions.append(f"MONTH(doc.`{date_field}`) IN %(months)s")

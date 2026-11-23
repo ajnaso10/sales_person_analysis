@@ -77,7 +77,8 @@ class TestApiHelpers(UnitTestCase):
 		)
 		joined = " ".join(conditions)
 		week_sql = week_of_month_sql("doc.`posting_date`")
-		self.assertIn("docstatus = 1", joined)
+		self.assertIn("doc.docstatus = 1", joined)
+		self.assertNotIn("outstanding_amount", joined)
 		# Credit notes stay in the query. Their stored amounts are negative.
 		self.assertNotIn("is_return", joined)
 		self.assertIn("MONTH", joined)
@@ -91,6 +92,49 @@ class TestApiHelpers(UnitTestCase):
 		self.assertEqual(values["months"], [8, 9])
 		self.assertEqual(values["weeks"], [1, 5])
 		self.assertEqual(values["sales_persons"], ["SP1"])
+
+	def test_payment_conditions(self):
+		meta = DOCTYPE_META["Sales Invoice"]
+		pending, _values = analysis_mod._base_conditions(
+			"Sales Invoice",
+			"Co",
+			meta,
+			year=2026,
+			month_nums=None,
+			weeks=[],
+			sales_persons=[],
+			status="Pending",
+		)
+		paid, _values = analysis_mod._base_conditions(
+			"Sales Invoice",
+			"Co",
+			meta,
+			year=2026,
+			month_nums=None,
+			weeks=[],
+			sales_persons=[],
+			status="Paid",
+		)
+		self.assertIn("outstanding_amount, 0) > 0", " ".join(pending))
+		self.assertIn("outstanding_amount, 0) <= 0", " ".join(paid))
+		self.assertIn("doc.docstatus = 1", " ".join(pending))
+
+		so_pending = analysis_mod._payment_condition("Sales Order", "Pending")
+		self.assertIn("advance_paid", so_pending)
+		self.assertIn("sales_order", so_pending)
+		self.assertIn("> 0", so_pending)
+		so_paid = analysis_mod._payment_condition("Sales Order", "Paid")
+		self.assertIn("<= 0", so_paid)
+		self.assertIsNone(analysis_mod._payment_condition("Sales Invoice", "All"))
+
+	def test_validate_status(self):
+		self.assertEqual(analysis_mod._validate_status(None), "All")
+		self.assertEqual(analysis_mod._validate_status(" Pending "), "Pending")
+		self.assertEqual(analysis_mod._validate_status("Paid"), "Paid")
+		with self.assertRaises(Exception):
+			analysis_mod._validate_status("Submitted")
+		with self.assertRaises(Exception):
+			analysis_mod._validate_status("Cancelled")
 
 	def test_base_conditions_so_no_is_return(self):
 		meta = DOCTYPE_META["Sales Order"]

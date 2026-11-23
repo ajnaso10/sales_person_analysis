@@ -217,6 +217,167 @@ class TestAnalysisAPI(IntegrationTestCase):
 			}
 		)
 		self.assertIsNone(tu.amount_for_customer(result, customer))
+		pending = get_customer_wise_sales(
+			{
+				"doctype": "Sales Invoice",
+				"status": "Pending",
+				"year": getdate(posting_date).year,
+				"sales_persons": [sp],
+				"page": 1,
+				"page_size": 50,
+			}
+		)
+		self.assertIsNone(tu.amount_for_customer(pending, customer))
+
+	def test_payment_status_splits_invoices_and_orders(self):
+		item, customer = self._require_setup()
+		sp = tu.ensure_sales_person("_SPA Cov Payment")
+		posting_date = add_days(today(), -2)
+		unpaid = tu.make_si(
+			company_name=self.company,
+			customer=customer,
+			item=item.name,
+			posting_date=posting_date,
+			qty=1,
+			rate=500,
+			sales_persons=[sp],
+		)
+		partly = tu.make_si(
+			company_name=self.company,
+			customer=customer,
+			item=item.name,
+			posting_date=posting_date,
+			qty=1,
+			rate=200,
+			sales_persons=[sp],
+		)
+		paid = tu.make_si(
+			company_name=self.company,
+			customer=customer,
+			item=item.name,
+			posting_date=posting_date,
+			qty=1,
+			rate=300,
+			sales_persons=[sp],
+		)
+		frappe.db.set_value("Sales Invoice", partly.name, "outstanding_amount", flt(partly.grand_total) / 2)
+		frappe.db.set_value("Sales Invoice", paid.name, "outstanding_amount", 0)
+
+		open_order = tu.make_so(
+			company_name=self.company,
+			customer=customer,
+			item=item.name,
+			transaction_date=posting_date,
+			qty=1,
+			rate=400,
+			sales_persons=[sp],
+		)
+		settled_order = tu.make_so(
+			company_name=self.company,
+			customer=customer,
+			item=item.name,
+			transaction_date=posting_date,
+			qty=1,
+			rate=150,
+			sales_persons=[sp],
+		)
+		order_total = flt(settled_order.rounded_total) or flt(settled_order.grand_total)
+		frappe.db.set_value("Sales Order", settled_order.name, "advance_paid", order_total)
+
+		invoiced_order = tu.make_so(
+			company_name=self.company,
+			customer=customer,
+			item=item.name,
+			transaction_date=posting_date,
+			qty=1,
+			rate=80,
+			sales_persons=[sp],
+		)
+		covering_invoice = tu.make_si(
+			company_name=self.company,
+			customer=customer,
+			item=item.name,
+			posting_date=posting_date,
+			qty=1,
+			rate=80,
+			sales_persons=[sp],
+		)
+		invoice_item = frappe.db.get_value("Sales Invoice Item", {"parent": covering_invoice.name}, "name")
+		frappe.db.set_value("Sales Invoice Item", invoice_item, "sales_order", invoiced_order.name)
+		frappe.db.set_value("Sales Invoice", covering_invoice.name, "outstanding_amount", 0)
+
+		for name, doctype in (
+			(unpaid.name, "Sales Invoice"),
+			(partly.name, "Sales Invoice"),
+			(paid.name, "Sales Invoice"),
+			(covering_invoice.name, "Sales Invoice"),
+			(open_order.name, "Sales Order"),
+			(settled_order.name, "Sales Order"),
+			(invoiced_order.name, "Sales Order"),
+		):
+			self.addCleanup(lambda n=name, dt=doctype: tu.cancel_and_delete(dt, n))
+
+		filters = {
+			"year": getdate(posting_date).year,
+			"sales_persons": [sp],
+			"page": 1,
+			"page_size": 50,
+		}
+
+		def amount(doctype, status):
+			result = get_customer_wise_sales({"doctype": doctype, "status": status, **filters})
+			self.assertEqual(result["status"], status)
+			return flt(tu.amount_for_customer(result, customer) or 0)
+
+		invoice_pending = flt(unpaid.base_grand_total) + flt(partly.base_grand_total)
+		invoice_paid = flt(paid.base_grand_total) + flt(covering_invoice.base_grand_total)
+		self.assertAlmostEqual(amount("Sales Invoice", "Pending"), invoice_pending, places=2)
+		self.assertAlmostEqual(amount("Sales Invoice", "Paid"), invoice_paid, places=2)
+		self.assertAlmostEqual(amount("Sales Invoice", "All"), invoice_pending + invoice_paid, places=2)
+
+		self.assertAlmostEqual(amount("Sales Order", "Pending"), flt(open_order.base_grand_total), places=2)
+		self.assertAlmostEqual(
+			amount("Sales Order", "Paid"),
+			flt(settled_order.base_grand_total) + flt(invoiced_order.base_grand_total),
+			places=2,
+		)
+		self.assertAlmostEqual(
+			amount("Sales Order", "All"),
+			flt(open_order.base_grand_total)
+			+ flt(settled_order.base_grand_total)
+			+ flt(invoiced_order.base_grand_total),
+			places=2,
+		)
+
+	def test_pending_excludes_cancelled(self):
+		item, customer = self._require_setup()
+		sp = tu.ensure_sales_person("_SPA Cov Pending Cancel")
+		posting_date = add_days(today(), -3)
+		si = tu.make_si(
+			company_name=self.company,
+			customer=customer,
+			item=item.name,
+			posting_date=posting_date,
+			qty=1,
+			rate=888,
+			sales_persons=[sp],
+		)
+		si.cancel()
+		self.addCleanup(
+			lambda: frappe.delete_doc("Sales Invoice", si.name, force=True, ignore_permissions=True)
+		)
+
+		result = get_customer_wise_sales(
+			{
+				"doctype": "Sales Invoice",
+				"status": "Pending",
+				"year": getdate(posting_date).year,
+				"sales_persons": [sp],
+				"page": 1,
+				"page_size": 50,
+			}
+		)
+		self.assertIsNone(tu.amount_for_customer(result, customer))
 
 	def test_cancelled_excluded(self):
 		item, customer = self._require_setup()
