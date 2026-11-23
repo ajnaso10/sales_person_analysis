@@ -15,6 +15,13 @@ AFTER_LINKS = (
 )
 
 ALLOWED_DOCTYPES = ("Sales Invoice", "Sales Order")
+
+# Payment filter on submitted documents. Drafts and cancelled stay out.
+# Pending: unpaid or only partly paid. Paid: nothing left to collect. All: both.
+STATUS_PENDING = "Pending"
+STATUS_PAID = "Paid"
+STATUS_ALL = "All"
+DOCUMENT_STATUSES = (STATUS_PENDING, STATUS_PAID, STATUS_ALL)
 DEFAULT_PAGE_SIZE = 20
 MAX_EXPORT_ROWS = 10000
 VISIBLE_CHIP_COUNT = 8
